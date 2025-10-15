@@ -89,6 +89,7 @@ dl = [
     "lightning",
     "torchmetrics",
     "tensorboard",
+    "torchdiffeq",
 ]
 ml = [
     "scikit-learn",
@@ -160,6 +161,7 @@ unfixable = [
 ]
 ignore = [
     "N803", # lowercase argument name
+    "N802", # lowercase function name
     "N806", # lowercase variable name
     "E741", # ambiguous variable name
 ]

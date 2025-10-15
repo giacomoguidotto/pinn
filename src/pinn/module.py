@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, override
 
-from lightning.pytorch import LightningModule
+import lightning.pytorch as pl
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 import torch
 
-from pinn.core import Problem, Sampler, Tensor
+from pinn.core import Batch, Problem, Tensor
 
 # tensor of collocation points in the time domain
-PINNDataset = Tensor
+PINNDataset = torch.utils.data.Dataset[Tensor]
 
 
 @dataclass
@@ -23,8 +23,7 @@ class SchedulerConfig:
     min_lr: float = 1e-6
 
 
-# belonging to the "ODE pinn solver" package
-class PINNModule(LightningModule):
+class PINNModule(pl.LightningModule):
     """
     Generic PINN Lightning module.
     Expects external Problem + Sampler + optimizer config.
@@ -47,17 +46,16 @@ class PINNModule(LightningModule):
         self.log_prefix = log_prefix
         self.gradient_clip_val = gradient_clip_val
 
-    def training_step(self, batch: PINNDataset, batch_idx: int) -> Tensor:
-        # batch may be ignored if sampler handles observed data internally
-        # Get collocation coordinates (time points for ODE)
-        t_col = batch
-        total, losses = self.problem.total_loss(t_col)
-        # log components
+    @override
+    def training_step(self, batch: Batch, batch_idx: int) -> Tensor:
+        total, losses = self.problem.total_loss(batch)
+
         for k, v in losses.items():
             self.log(f"{self.log_prefix}/{k}", v, on_step=False, on_epoch=True)
 
         return total
 
+    @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
         opt = torch.optim.Adam(self.parameters(), lr=self.lr)
         if not self.scheduler_cfg:
@@ -79,13 +77,3 @@ class PINNModule(LightningModule):
                 "frequency": 1,
             },
         }
-
-
-# belonging to the "ODE pinn solver" package
-class CollocationDataset(torch.utils.data.Dataset[PINNDataset]):
-    def __init__(self, sampler: Sampler, batch_size: int):
-        self.sampler = sampler
-        self.batch_size = batch_size
-
-    def __getitem__(self, _: int) -> PINNDataset:
-        return self.sampler.collocation(self.batch_size)

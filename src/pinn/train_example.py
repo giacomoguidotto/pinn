@@ -7,9 +7,13 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
 
-from pinn.module import CollocationDataset, PINNModule, SchedulerConfig
-from pinn.sir import SIRHyperparameters, SIRObservation, SIRProperties, build_sir_problem
-from pinn.sir_pinn import SIRConfig, generate_sir_data
+from pinn.module import PINNModule, SchedulerConfig
+from pinn.sir_inverse import (
+    SIRInvDataModule,
+    SIRInvHyperparameters,
+    SIRInvProperties,
+    build_sir_problem,
+)
 
 LOG_DIR = Path("./data/logs")
 TENSORBOARD_DIR = LOG_DIR / "tensorboard"
@@ -18,25 +22,15 @@ VERSIONS_DIR = Path("./data/versions")
 
 
 def train_sir_inverse(
-    props: SIRProperties, hp: SIRHyperparameters, run_name: str = "sir_inverse_beta_mlp"
+    props: SIRInvProperties, hp: SIRInvHyperparameters, run_name: str = "sir_inverse_beta_mlp"
 ) -> tuple[Path, str]:
     TENSORBOARD_DIR.mkdir(parents=True, exist_ok=True)
     CSV_DIR.mkdir(parents=True, exist_ok=True)
     VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # TODO: do it internally
-    t_obs, _, i_obs = generate_sir_data(
-        SIRConfig(
-            N=props.N,
-            delta=props.delta,
-            time_domain=(int(props.domain.t0), int(props.domain.t1)),
-            collocation_points=props.n_collocation,
-            initial_conditions=[1.0, 0.0],
-            beta_true=props.delta * 3.0,  # dummy for synthetic generation
-        )
-    )
+    dm = SIRInvDataModule(props, hp)
 
-    problem, sampler = build_sir_problem(props, SIRObservation(t_obs, i_obs), hp)
+    problem = build_sir_problem(props, hp)
 
     module = PINNModule(
         problem=problem,
@@ -75,12 +69,7 @@ def train_sir_inverse(
         gradient_clip_val=0.1,
     )
 
-    loader = CollocationDataset(
-        sampler,
-        hp.batch_size,
-    )
-
-    trainer.fit(module, loader)
+    trainer.fit(module, dm)
 
     version = f"v{len(list(VERSIONS_DIR.iterdir()))}_{run_name}"
     model_path = VERSIONS_DIR / f"{version}.ckpt"

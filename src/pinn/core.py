@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeAlias, override
 
 import torch
 import torch.nn as nn
@@ -74,6 +74,7 @@ class Field(nn.Module):
             nn.init.xavier_normal_(m.weight)
             nn.init.zeros_(m.bias)
 
+    @override
     def forward(self, x: Tensor) -> Tensor:
         if self.encode is not None:
             x = self.encode(x)
@@ -125,6 +126,7 @@ class Parameter(nn.Module):
             nn.init.xavier_normal_(m.weight)
             nn.init.zeros_(m.bias)
 
+    @override
     def forward(self, x: Tensor | None = None) -> Tensor:
         if self.mode == "scalar":
             return self.value if x is None else self.value.expand_as(x)
@@ -143,24 +145,19 @@ class Domain:
     t1: float
 
 
-@dataclass
-class Observations:
-    """
-    Observations for ODE problems: time points and values.
-    """
-
-    t: Tensor
-    i: Tensor
-
-
-# TODO: deprecated
-class Sampler(Protocol):
-    def collocation(self, n: int) -> Tensor: ...
-    def observed(self) -> Observations: ...
+Batch: TypeAlias = tuple[Tensor, Tensor]
+"""
+Batch is a tuple of (data, collocations) where data is a (batch_size, dims) tensor of data points 
+and collocations is a (batch_size) tensor of collocation points over the domain.
+"""
 
 
 @dataclass
 class Loss:
+    """
+    A loss value with a weight. Used to aggregate losses in a weighted sum.
+    """
+
     value: Tensor
     weight: float
 
@@ -168,18 +165,20 @@ class Loss:
 class Operator(Protocol):
     """
     Builds residuals given fields and parameters.
-    Returns dict of name->Tensor residuals evaluated at provided coordinates.
+    Returns dict of name->Loss residuals evaluated at provided batch.
     """
 
-    def residuals(self, coords: Tensor) -> dict[str, Loss]: ...
+    def residuals(self, collocations: Tensor) -> dict[str, Loss]: ...
 
 
 class Constraint(Protocol):
     """
-    Returns a named loss tensor (or dict of tensors).
+    Returns a named loss for the given batch.
+    Returns dict of name->Loss.
     """
 
-    def loss(self) -> dict[str, Loss]: ...
+    def set_loss_fn(self, loss_fn: nn.Module) -> None: ...
+    def loss(self, batch: Batch) -> dict[str, Loss]: ...
 
 
 class Problem:
@@ -195,15 +194,15 @@ class Problem:
         self.operator = operator
         self.constraints = constraints
 
-    def total_loss(self, collocation_coords: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
+    def total_loss(self, batch: Batch) -> tuple[Tensor, dict[str, Tensor]]:
         losses: dict[str, Loss] = {}
-        # PDE residuals
-        res = self.operator.residuals(collocation_coords)
+
+        res = self.operator.residuals(batch[1])
         for k, v in res.items():
             losses[k] = v
-        # Constraints
+
         for c in self.constraints:
-            for k, v in c.loss().items():
+            for k, v in c.loss(batch).items():
                 losses[k] = v
 
         device = next(iter(losses.values())).value.device
