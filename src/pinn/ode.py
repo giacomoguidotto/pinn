@@ -5,8 +5,7 @@ from typing import Any, override
 import torch
 from torchdiffeq import odeint
 
-from pinn.core import Domain, Tensor
-from pinn.module import PINNDataset
+from pinn.core import Domain, PINNDataset, Tensor
 
 ODECallable = Callable[..., Tensor]
 

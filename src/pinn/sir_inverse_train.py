@@ -7,12 +7,12 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
 
-from pinn.module import PINNModule, SchedulerConfig
+from pinn.module import PINNModule
 from pinn.sir_inverse import (
     SIRInvDataModule,
     SIRInvHyperparameters,
+    SIRInvProblem,
     SIRInvProperties,
-    build_sir_problem,
 )
 
 LOG_DIR = Path("./data/logs")
@@ -30,19 +30,11 @@ def train_sir_inverse(
 
     dm = SIRInvDataModule(props, hp)
 
-    problem = build_sir_problem(props, hp)
+    problem = SIRInvProblem(props, hp)
 
     module = PINNModule(
         problem=problem,
-        lr=hp.lr,
-        scheduler_cfg=SchedulerConfig(
-            mode="min",
-            factor=0.5,
-            patience=65,
-            threshold=5e-3,
-            min_lr=1e-6,
-        ),
-        gradient_clip_val=0.1,
+        hp=hp,
     )
 
     checkpoint = ModelCheckpoint(

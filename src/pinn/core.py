@@ -8,7 +8,9 @@ from typing import Literal, Protocol, TypeAlias, override
 import torch
 import torch.nn as nn
 
-Tensor = torch.Tensor
+Tensor: TypeAlias = torch.Tensor
+
+PINNDataset: TypeAlias = torch.utils.data.Dataset[Tensor]
 
 Activations = Literal[
     "tanh",
@@ -190,16 +192,22 @@ class Problem:
         self,
         operator: Operator,  # TODO: why not more than one?
         constraints: list[Constraint],
+        loss_fn: nn.Module,
     ):
+        self.loss_fn = loss_fn
         self.operator = operator
         self.constraints = constraints
+        for c in self.constraints:
+            c.set_loss_fn(loss_fn)
 
     def total_loss(self, batch: Batch) -> tuple[Tensor, dict[str, Tensor]]:
         losses: dict[str, Loss] = {}
 
-        res = self.operator.residuals(batch[1])
+        _, collocations = batch
+        zeros = torch.zeros_like(collocations)
+        res = self.operator.residuals(collocations)
         for k, v in res.items():
-            losses[k] = v
+            losses[k] = self.loss_fn(v.value, zeros)
 
         for c in self.constraints:
             for k, v in c.loss(batch).items():
@@ -213,16 +221,3 @@ class Problem:
         log_losses = {k: v.value for k, v in losses.items()}
         log_losses["total"] = total
         return total, log_losses
-
-    @staticmethod
-    def _default_weight_by_name(name: str) -> float:
-        # Default grouping: pde/* -> pde_weight, ic/* -> ic_weight, data/* -> data_weight
-        if name.startswith("pde/"):
-            return 1.0
-        if name.startswith("ic/"):
-            return 1.0
-        if name.startswith("data/"):
-            return 1.0
-        if name.startswith("reg/"):
-            return 1.0
-        return 1.0

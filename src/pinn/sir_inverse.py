@@ -18,20 +18,33 @@ from pinn.core import (
     Loss,
     Operator,
     Parameter,
+    PINNDataset,
     Problem,
     Tensor,
 )
-from pinn.module import PINNDataset
+from pinn.module import PINNHyperparameters, SchedulerConfig
 from pinn.ode import ODEDataset, ODEProperties
 
 
 @dataclass
-class SIRInvHyperparameters:
-    # network
+class SIRInvHyperparameters(PINNHyperparameters):
+    lr = 1e-3
+    batch_size = 256
+    max_epochs = 1000
+    gradient_clip_val = 0.1
+    collocations: int = 4096
+    scheduler = SchedulerConfig(
+        mode="min",
+        factor=0.5,
+        patience=65,
+        threshold=5e-3,
+        min_lr=1e-6,
+    )
+    # fields networks
     hidden_layers: list[int] = None  # type: ignore
     activation: Activations = "tanh"
     output_activation: Activations = "softplus"
-    # beta(t) network
+    # beta param network
     beta_hidden: list[int] = None  # type: ignore
     beta_activation: Activations = "tanh"
     beta_output_activation: Activations = "softplus"
@@ -40,10 +53,6 @@ class SIRInvHyperparameters:
     ic_weight: float = 5.0
     data_weight: float = 1.0
     reg_beta_smooth_weight: float = 0.0
-    # training
-    lr: float = 1e-3
-    batch_size: int = 256
-    n_collocation: int = 4096
 
     def __post_init__(self) -> None:
         if self.hidden_layers is None:
@@ -99,15 +108,11 @@ class SIRInvDataset(ODEDataset):
         return len(self.obs)
 
 
-# TODO: necessary? it would imply a ODEHyperparameters
-# class SIRInvCollocations(CollocationDataset):
-
-
 class SIRInvCollocations(PINNDataset):
     def __init__(self, props: SIRInvProperties, hp: SIRInvHyperparameters):
         t0_s = torch.log1p(torch.tensor(props.domain.t0, dtype=torch.float32))
         t1_s = torch.log1p(torch.tensor(props.domain.t1, dtype=torch.float32))
-        t_s = torch.rand((hp.n_collocation, 1)) * (t1_s - t0_s) + t0_s
+        t_s = torch.rand((hp.collocations, 1)) * (t1_s - t0_s) + t0_s
         self.t = torch.expm1(t_s)
 
     @override
@@ -294,65 +299,66 @@ class SIRInvDataModule(pl.LightningDataModule):
         return (loader_data, loader_col)
 
 
-# TODO: make it the SIRProblem class
-def build_sir_problem(
-    props: SIRInvProperties,
-    hp: SIRInvHyperparameters,
-) -> Problem:
-    in_dim = 1
-    out_dim = 1
-    field_S = Field(
-        in_dim, out_dim, hp.hidden_layers, hp.activation, hp.output_activation, name="S"
-    )
-    field_I = Field(
-        in_dim, out_dim, hp.hidden_layers, hp.activation, hp.output_activation, name="I"
-    )
+class SIRInvProblem(Problem):
+    def __init__(
+        self,
+        props: SIRInvProperties,
+        hp: SIRInvHyperparameters,
+    ) -> None:
+        in_dim, out_dim = 1, 1
+        field_S = Field(
+            in_dim, out_dim, hp.hidden_layers, hp.activation, hp.output_activation, name="S"
+        )
+        field_I = Field(
+            in_dim, out_dim, hp.hidden_layers, hp.activation, hp.output_activation, name="I"
+        )
 
-    beta = Parameter(
-        mode="mlp",
-        in_dim=in_dim,
-        hidden_layers=hp.beta_hidden,
-        activation=hp.beta_activation,
-        output_activation=hp.beta_output_activation,
-        name="beta",
-    )
+        # beta = Parameter(
+        #     mode="mlp",
+        #     in_dim=in_dim,
+        #     hidden_layers=hp.beta_hidden,
+        #     activation=hp.beta_activation,
+        #     output_activation=hp.beta_output_activation,
+        #     name="beta",
+        # )
+        beta = Parameter(
+            mode="scalar",
+            init_value=props.beta,
+            name="beta",
+        )
 
-    operator = SIROperator(
-        field_S=field_S,
-        field_I=field_I,
-        weight_S=hp.pde_weight,
-        weight_I=hp.pde_weight,
-        beta=beta,
-        delta=props.delta,
-    )
-
-    constraints: list[Constraint] = [
-        ICConstraint(
-            props=props,
+        operator = SIROperator(
             field_S=field_S,
             field_I=field_I,
-            weight_S0=hp.ic_weight,
-            weight_I0=hp.ic_weight,
-        ),
-        DataConstraint(
-            field_S=field_S,
-            field_I=field_I,
-            weight=hp.data_weight,
-        ),
-        BetaSmoothness(
+            weight_S=hp.pde_weight,
+            weight_I=hp.pde_weight,
             beta=beta,
-            weight=hp.reg_beta_smooth_weight,
-        ),
-    ]
+            delta=props.delta,
+        )
 
-    problem = Problem(
-        operator=operator,
-        constraints=constraints,
-    )
+        constraints: list[Constraint] = [
+            ICConstraint(
+                props=props,
+                field_S=field_S,
+                field_I=field_I,
+                weight_S0=hp.ic_weight,
+                weight_I0=hp.ic_weight,
+            ),
+            DataConstraint(
+                field_S=field_S,
+                field_I=field_I,
+                weight=hp.data_weight,
+            ),
+            BetaSmoothness(
+                beta=beta,
+                weight=hp.reg_beta_smooth_weight,
+            ),
+        ]
 
-    # TODO: do not instantiate here
-    # opt_cfg = {
-    #     "lr": hp.lr,
-    #     "batch_size": hp.batch_size,
-    # }
-    return problem
+        loss_fn = nn.MSELoss()
+
+        super().__init__(
+            operator=operator,
+            constraints=constraints,
+            loss_fn=loss_fn,
+        )

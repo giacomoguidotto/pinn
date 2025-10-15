@@ -10,8 +10,18 @@ import torch
 
 from pinn.core import Batch, Problem, Tensor
 
-# tensor of collocation points in the time domain
-PINNDataset = torch.utils.data.Dataset[Tensor]
+
+@dataclass
+class PINNHyperparameters:
+    lr: float
+    batch_size: int
+    max_epochs: int
+    gradient_clip_val: float
+    collocations: int
+    scheduler: SchedulerConfig
+    early_stopping: EarlyStoppingConfig | None = None
+    smma_stopping: SMMAStoppingConfig | None = None
+    log_prefix: str = "train"
 
 
 @dataclass
@@ -23,6 +33,19 @@ class SchedulerConfig:
     min_lr: float = 1e-6
 
 
+@dataclass
+class EarlyStoppingConfig:
+    patience: int
+    mode: Literal["min", "max"]
+
+
+@dataclass
+class SMMAStoppingConfig:
+    window: int
+    threshold: float
+    lookback: int
+
+
 class PINNModule(pl.LightningModule):
     """
     Generic PINN Lightning module.
@@ -32,47 +55,44 @@ class PINNModule(pl.LightningModule):
     def __init__(
         self,
         problem: Problem,
-        lr: float = 1e-3,
-        scheduler_cfg: SchedulerConfig | None = None,
-        log_prefix: str = "train",
-        gradient_clip_val: float = 0.0,
+        hp: PINNHyperparameters,
     ):
         super().__init__()
         self.save_hyperparameters()
 
         self.problem = problem
-        self.lr = lr
-        self.scheduler_cfg = scheduler_cfg
-        self.log_prefix = log_prefix
-        self.gradient_clip_val = gradient_clip_val
+        self.hp = hp
+        self.scheduler = hp.scheduler
+        self.early_stopping = hp.early_stopping
+        self.smma_stopping = hp.smma_stopping
 
     @override
     def training_step(self, batch: Batch, batch_idx: int) -> Tensor:
         total, losses = self.problem.total_loss(batch)
 
         for k, v in losses.items():
-            self.log(f"{self.log_prefix}/{k}", v, on_step=False, on_epoch=True)
+            self.log(f"{self.hp.log_prefix}/{k}", v, on_step=False, on_epoch=True)
 
         return total
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
-        opt = torch.optim.Adam(self.parameters(), lr=self.lr)
-        if not self.scheduler_cfg:
+        opt = torch.optim.Adam(self.parameters(), lr=self.hp.lr)
+        if not self.scheduler:
             return opt
         sch = torch.optim.lr_scheduler.ReduceLROnPlateau(
             opt,
-            mode=self.scheduler_cfg.mode,
-            factor=self.scheduler_cfg.factor,
-            patience=self.scheduler_cfg.patience,
-            threshold=self.scheduler_cfg.threshold,
-            min_lr=self.scheduler_cfg.min_lr,
+            mode=self.scheduler.mode,
+            factor=self.scheduler.factor,
+            patience=self.scheduler.patience,
+            threshold=self.scheduler.threshold,
+            min_lr=self.scheduler.min_lr,
         )
         return {
             "optimizer": opt,
             "lr_scheduler": {
                 "scheduler": sch,
-                "monitor": f"{self.log_prefix}/total_loss",
+                "monitor": f"{self.hp.log_prefix}/total_loss",
                 "interval": "epoch",
                 "frequency": 1,
             },
