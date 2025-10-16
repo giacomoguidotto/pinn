@@ -1,8 +1,9 @@
 # src/pinn/sir.py
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import override
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TypeAlias, override
 
 import lightning.pytorch as pl
 import torch
@@ -25,61 +26,7 @@ from pinn.core import (
 from pinn.module import PINNHyperparameters, SchedulerConfig
 from pinn.ode import ODEDataset, ODEProperties
 
-
-@dataclass
-class SIRInvHyperparameters(PINNHyperparameters):
-    lr = 1e-3
-    batch_size = 256
-    max_epochs = 1000
-    gradient_clip_val = 0.1
-    collocations: int = 4096
-    scheduler = SchedulerConfig(
-        mode="min",
-        factor=0.5,
-        patience=65,
-        threshold=5e-3,
-        min_lr=1e-6,
-    )
-    # fields networks
-    hidden_layers: list[int] = None  # type: ignore
-    activation: Activations = "tanh"
-    output_activation: Activations = "softplus"
-    # beta param network
-    beta_hidden: list[int] = None  # type: ignore
-    beta_activation: Activations = "tanh"
-    beta_output_activation: Activations = "softplus"
-    # losses
-    pde_weight: float = 10.0
-    ic_weight: float = 5.0
-    data_weight: float = 1.0
-    reg_beta_smooth_weight: float = 0.0
-
-    def __post_init__(self) -> None:
-        if self.hidden_layers is None:
-            self.hidden_layers = [64, 128, 128, 64]
-        if self.beta_hidden is None:
-            self.beta_hidden = [64, 64]
-
-
-@dataclass
-class SIRInvProperties(ODEProperties):
-    domain: Domain = None  # type: ignore
-
-    N: float = 56e6
-    delta: float = 1 / 5
-    beta: float = delta * 3.0
-    args: tuple[float, float, float] = (delta, beta, N)
-
-    I0: float = 1.0
-    S0: float = N - I0
-    X0: list[float] = None  # type: ignore
-
-    def __post_init__(self) -> None:
-        if self.domain is None:
-            self.domain = Domain(t0=0.0, t1=90.0)
-        if self.X0 is None:
-            R0 = self.N - self.S0 - self.I0
-            self.X0 = [self.S0, self.I0, R0]
+SIRCallable: TypeAlias = Callable[[Tensor, Tensor, float, float, float], Tensor]
 
 
 def SIR(x: Tensor, _: Tensor, d: float, b: float, N: float) -> Tensor:
@@ -90,73 +37,93 @@ def SIR(x: Tensor, _: Tensor, d: float, b: float, N: float) -> Tensor:
     return torch.stack([dR, dI])
 
 
-class SIRInvDataset(ODEDataset):
-    def __init__(self, props: SIRInvProperties):
-        # generate SIR components into self.data
-        super().__init__(props, SIR)
+@dataclass
+class SIRInvHyperparameters(PINNHyperparameters):
+    lr = 1e-3
+    batch_size = 256
+    max_epochs = 1000
+    gradient_clip_val = 0.1
+    collocations = 4096
+    scheduler = SchedulerConfig(
+        mode="min",
+        factor=0.5,
+        patience=65,
+        threshold=5e-3,
+        min_lr=1e-6,
+    )
+    # fields networks
+    hidden_layers: list[int] = field(default_factory=lambda: [64, 128, 128, 64])
+    activation: Activations = "tanh"
+    output_activation: Activations = "softplus"
+    # beta param network
+    beta_hidden: list[int] = field(default_factory=lambda: [64, 64])
+    beta_activation: Activations = "tanh"
+    beta_output_activation: Activations = "softplus"
+    # losses
+    pde_weight: float = 10.0
+    ic_weight: float = 5.0
+    data_weight: float = 1.0
+    reg_beta_smooth_weight: float = 0.0
 
-        I = self.data[:, 1].clamp_min(0.0)
-        I_obs = torch.poisson(I)
-        self.obs = torch.stack([self.t, I_obs])
 
-    @override
-    def __getitem__(self, idx: int) -> Tensor:
-        return self.obs[idx]
+@dataclass
+class SIRInvProperties(ODEProperties):
+    domain: Domain = field(default_factory=lambda: Domain(t0=0.0, t1=90.0))
+    generator: SIRCallable = field(default_factory=lambda: SIR)
 
-    @override
-    def __len__(self) -> int:
-        return len(self.obs)
+    N: float = 56e6
+    delta: float = 1 / 5
+    beta: float = delta * 3.0
+    args: tuple[float, float, float] = (delta, beta, N)
 
+    I0: float = 1.0
+    X0: list[float] = None  # type: ignore
 
-class SIRInvCollocations(PINNDataset):
-    def __init__(self, props: SIRInvProperties, hp: SIRInvHyperparameters):
-        t0_s = torch.log1p(torch.tensor(props.domain.t0, dtype=torch.float32))
-        t1_s = torch.log1p(torch.tensor(props.domain.t1, dtype=torch.float32))
-        t_s = torch.rand((hp.collocations, 1)) * (t1_s - t0_s) + t0_s
-        self.t = torch.expm1(t_s)
-
-    @override
-    def __getitem__(self, idx: int) -> Tensor:
-        return self.t[idx]
-
-    def __len__(self) -> int:
-        return len(self.t)
+    def __post_init__(self) -> None:
+        S0 = self.N - self.I0
+        R0 = self.N - self.I0 - S0  # 0 by definition
+        self.X0 = [S0, self.I0, R0]
 
 
 class SIROperator(Operator):
     def __init__(
         self,
+        props: SIRInvProperties,
         field_S: Field,
         field_I: Field,
         weight_S: float,
         weight_I: float,
         beta: Parameter,
-        delta: float,
     ):
+        self.SIR = props.generator
+        self.delta = props.delta
+
         self.S = field_S
         self.I = field_I
         self.beta = beta
-        self.delta = delta
         self.weight_S = weight_S
         self.weight_I = weight_I
 
     @override
     def residuals(self, t: Tensor) -> dict[str, Loss]:
-        # S' = -β S I / N  and I' = β S I / N - δ I, but we assume normalized N=1; scale outside
         t = t.requires_grad_(True)
         S = self.S(t)
         I = self.I(t)
-        # R = 1.0 - S - I  # unused in residuals directly; can add R' if desired
+        x = torch.stack([S, I])
 
-        dS_dt = torch.autograd.grad(S, t, torch.ones_like(S), create_graph=True)[0]
-        dI_dt = torch.autograd.grad(I, t, torch.ones_like(I), create_graph=True)[0]
-        beta_t = self.beta(t)  # shape (B,1)
+        beta = self.beta(t)
 
-        res_S = dS_dt + beta_t * S * I
-        res_I = dI_dt - beta_t * S * I + self.delta * I
+        dx = self.SIR(x, t, self.delta, beta, 1)  # TODO: check scaling everywhere
+        dS_pred, dI_pred = dx.unbind(dim=1)
 
-        loss_S = Loss(value=res_S, weight=self.weight_S)
-        loss_I = Loss(value=res_I, weight=self.weight_I)
+        dS = torch.autograd.grad(S, t, torch.ones_like(S), create_graph=True)[0]
+        dI = torch.autograd.grad(I, t, torch.ones_like(I), create_graph=True)[0]
+
+        S_res = dS - dS_pred
+        I_res = dI - dI_pred
+
+        loss_S = Loss(value=S_res, weight=self.weight_S)
+        loss_I = Loss(value=I_res, weight=self.weight_I)
         return {"pde/sir_S": loss_S, "pde/sir_I": loss_I}
 
 
@@ -179,12 +146,12 @@ class DataConstraint(Constraint):
     @override
     def loss(self, batch: Batch) -> dict[str, Loss]:
         data, _ = batch
-        (t, I) = data.unbind(dim=1)
+        (t, I_data) = data.unbind(dim=1)
 
         I_pred = self.I(t)
 
         data_loss = Loss(
-            value=self.loss_fn(I_pred, I),
+            value=self.loss_fn(I_pred, I_data),
             weight=self.weight,
         )
         return {"data/I": data_loss}
@@ -200,10 +167,11 @@ class ICConstraint(Constraint):
         weight_I0: float,
     ):
         # Normalize to N=1
-        self.S = field_S
-        self.I = field_I
         self.X0 = torch.tensor(props.X0, dtype=torch.float32) / props.N
         self.t0 = torch.tensor(props.domain.t0, dtype=torch.float32)
+
+        self.S = field_S
+        self.I = field_I
         self.weight_S0 = weight_S0
         self.weight_I0 = weight_I0
 
@@ -219,7 +187,6 @@ class ICConstraint(Constraint):
 
         S0_pred = self.S(self.t0)
         I0_pred = self.I(self.t0)
-        # Optionally enforce S+I<=1 at t0; often implied
 
         S0_loss = Loss(
             value=self.loss_fn(S0_pred, S0),
@@ -262,43 +229,6 @@ class BetaSmoothness(Constraint):
         return {"reg/beta_smooth": loss}
 
 
-class SIRInvDataModule(pl.LightningDataModule):
-    def __init__(
-        self,
-        props: SIRInvProperties,
-        hp: SIRInvHyperparameters,
-    ):
-        super().__init__()
-        self.props = props
-        self.hp = hp
-
-    @override
-    def setup(self, stage: str | None = None) -> None:
-        self.ds_data = SIRInvDataset(self.props)
-        self.ds_col = SIRInvCollocations(self.props, self.hp)
-
-    @override
-    def train_dataloader(self) -> tuple[DataLoader[Tensor], DataLoader[Tensor]]:
-        # In DDP, Lightning will wrap with DistributedSampler automatically
-        loader_data = DataLoader[Tensor](
-            self.ds_data,
-            batch_size=self.hp.batch_size,
-            shuffle=True,
-            num_workers=0,
-            pin_memory=False,
-            drop_last=True,
-        )
-        loader_col = DataLoader[Tensor](
-            self.ds_col,
-            batch_size=self.hp.batch_size,
-            shuffle=True,
-            num_workers=0,
-            pin_memory=False,
-            drop_last=True,
-        )
-        return (loader_data, loader_col)
-
-
 class SIRInvProblem(Problem):
     def __init__(
         self,
@@ -328,12 +258,12 @@ class SIRInvProblem(Problem):
         )
 
         operator = SIROperator(
+            props=props,
             field_S=field_S,
             field_I=field_I,
             weight_S=hp.pde_weight,
             weight_I=hp.pde_weight,
             beta=beta,
-            delta=props.delta,
         )
 
         constraints: list[Constraint] = [
@@ -362,3 +292,69 @@ class SIRInvProblem(Problem):
             constraints=constraints,
             loss_fn=loss_fn,
         )
+
+
+class SIRInvDataset(ODEDataset):
+    def __init__(self, props: SIRInvProperties):
+        # generate SIR components into self.data
+        super().__init__(props)
+
+        I = self.data[:, 1].clamp_min(0.0)
+        I_obs = torch.poisson(I)
+        self.obs = torch.stack([self.t, I_obs])
+
+    @override
+    def __getitem__(self, idx: int) -> Tensor:
+        return self.obs[idx]
+
+    @override
+    def __len__(self) -> int:
+        return len(self.obs)
+
+
+class SIRInvCollocationset(PINNDataset):
+    def __init__(self, props: SIRInvProperties, hp: SIRInvHyperparameters):
+        t0_s = torch.log1p(torch.tensor(props.domain.t0, dtype=torch.float32))
+        t1_s = torch.log1p(torch.tensor(props.domain.t1, dtype=torch.float32))
+        t_s = torch.rand((hp.collocations, 1)) * (t1_s - t0_s) + t0_s
+        self.t = torch.expm1(t_s)
+
+    @override
+    def __getitem__(self, idx: int) -> Tensor:
+        return self.t[idx]
+
+    def __len__(self) -> int:
+        return len(self.t)
+
+
+class SIRInvDataModule(pl.LightningDataModule):
+    def __init__(
+        self,
+        props: SIRInvProperties,
+        hp: SIRInvHyperparameters,
+    ):
+        super().__init__()
+        self.props = props
+        self.hp = hp
+
+    @override
+    def setup(self, stage: str | None = None) -> None:
+        self.dataset = SIRInvDataset(self.props)
+        self.collocationset = SIRInvCollocationset(self.props, self.hp)
+
+    @override
+    def train_dataloader(self) -> tuple[DataLoader[Tensor], DataLoader[Tensor]]:
+        data_loader = DataLoader[Tensor](
+            self.dataset,
+            batch_size=self.hp.batch_size,
+            shuffle=True,
+            num_workers=5,
+        )
+        collocations_loader = DataLoader[Tensor](
+            self.collocationset,
+            batch_size=self.hp.batch_size,
+            shuffle=True,
+            num_workers=5,
+        )
+
+        return (data_loader, collocations_loader)

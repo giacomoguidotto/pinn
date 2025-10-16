@@ -1,7 +1,7 @@
 # src/pinn/pinn_module.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, override
 
 import lightning.pytorch as pl
@@ -9,19 +9,6 @@ from lightning.pytorch.utilities.types import OptimizerLRScheduler
 import torch
 
 from pinn.core import Batch, Problem, Tensor
-
-
-@dataclass
-class PINNHyperparameters:
-    lr: float
-    batch_size: int
-    max_epochs: int
-    gradient_clip_val: float
-    collocations: int
-    scheduler: SchedulerConfig
-    early_stopping: EarlyStoppingConfig | None = None
-    smma_stopping: SMMAStoppingConfig | None = None
-    log_prefix: str = "train"
 
 
 @dataclass
@@ -35,15 +22,28 @@ class SchedulerConfig:
 
 @dataclass
 class EarlyStoppingConfig:
-    patience: int
-    mode: Literal["min", "max"]
+    patience: int = 50
+    mode: Literal["min", "max"] = "min"
 
 
 @dataclass
 class SMMAStoppingConfig:
-    window: int
-    threshold: float
-    lookback: int
+    window: int = 50
+    threshold: float = 0.1
+    lookback: int = 50
+
+
+@dataclass
+class PINNHyperparameters:
+    lr: float = 1e-3
+    batch_size: int = 256
+    max_epochs: int = 1000
+    gradient_clip_val: float = 0.1
+    collocations: int = 4096
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    early_stopping: EarlyStoppingConfig | None = None
+    smma_stopping: SMMAStoppingConfig | None = None
+    log_prefix: str = "train"
 
 
 class PINNModule(pl.LightningModule):
@@ -80,6 +80,7 @@ class PINNModule(pl.LightningModule):
         opt = torch.optim.Adam(self.parameters(), lr=self.hp.lr)
         if not self.scheduler:
             return opt
+
         sch = torch.optim.lr_scheduler.ReduceLROnPlateau(
             opt,
             mode=self.scheduler.mode,
