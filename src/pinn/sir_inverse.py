@@ -14,12 +14,12 @@ from pinn.core import (
     Activations,
     Batch,
     Constraint,
+    Dataset,
     Domain,
     Field,
     Loss,
     Operator,
     Parameter,
-    PINNDataset,
     Problem,
     Tensor,
 )
@@ -41,7 +41,7 @@ def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
 @dataclass
 class SIRInvHyperparameters(PINNHyperparameters):
     lr: float = 1e-3
-    batch_size: int = 256
+    batch_size: int = 91  # FIXME: dataloader is not batching correctly
     max_epochs: int = 1000
     gradient_clip_val: float = 0.1
     collocations: int = 4096
@@ -146,8 +146,7 @@ class DataConstraint(Constraint):
 
     @override
     def loss(self, batch: Batch) -> dict[str, Loss]:
-        data, _ = batch
-        (t, I_data) = data.unbind(dim=1)
+        (t, I_data), _ = batch
 
         I_pred = self.I(t)
 
@@ -168,8 +167,8 @@ class ICConstraint(Constraint):
         weight_I0: float,
     ):
         # Normalize to N=1
-        self.Y0 = torch.tensor(props.Y0, dtype=torch.float32)
-        self.t0 = torch.tensor(props.domain.t0, dtype=torch.float32)
+        self.Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
+        self.t0 = torch.tensor(props.domain.t0, dtype=torch.float32).reshape(1, 1)
 
         self.S = field_S
         self.I = field_I
@@ -183,8 +182,10 @@ class ICConstraint(Constraint):
         self.loss_fn = loss_fn
 
     @override
-    def loss(self, b: Batch) -> dict[str, Loss]:
-        device = b[0].device
+    def loss(self, batch: Batch) -> dict[str, Loss]:
+        _, collocations = batch
+        device = collocations.device
+
         t0 = self.t0.to(device)
         S0, I0, _ = self.Y0.to(device)
 
@@ -226,9 +227,12 @@ class BetaSmoothness(Constraint):
 
         t = collocations.requires_grad_(True)
         b = self.beta(t)
-        db_dt = torch.autograd.grad(b, t, torch.ones_like(b), create_graph=True)[0]
+        db = torch.autograd.grad(b, t, torch.ones_like(b), create_graph=True)[0]
 
-        loss = Loss(value=self.loss_fn(db_dt), weight=self.weight)
+        loss = Loss(
+            value=self.loss_fn(db),
+            weight=self.weight,
+        )
         return {"reg/beta_smooth": loss}
 
 
@@ -282,10 +286,10 @@ class SIRInvProblem(Problem):
                 field_I=field_I,
                 weight=hp.data_weight,
             ),
-            BetaSmoothness(
-                beta=beta,
-                weight=hp.reg_beta_smooth_weight,
-            ),
+            # BetaSmoothness(
+            #     beta=beta,
+            #     weight=hp.reg_beta_smooth_weight,
+            # ),
         ]
 
         loss_fn = nn.MSELoss()
@@ -309,7 +313,7 @@ class SIRInvDataset(ODEDataset):
 
         I = self.data[:, 1].clamp_min(0.0)
         I_obs = torch.poisson(I)
-        self.obs = torch.stack([self.t, I_obs])
+        self.obs = torch.stack((self.t, I_obs), dim=1).unsqueeze(-1)
 
     @override
     def __getitem__(self, idx: int) -> Tensor:
@@ -317,10 +321,10 @@ class SIRInvDataset(ODEDataset):
 
     @override
     def __len__(self) -> int:
-        return len(self.obs)
+        return self.obs.shape[1]
 
 
-class SIRInvCollocationset(PINNDataset):
+class SIRInvCollocationset(Dataset):
     def __init__(self, props: SIRInvProperties, hp: SIRInvHyperparameters):
         t0_s = torch.log1p(torch.tensor(props.domain.t0, dtype=torch.float32))
         t1_s = torch.log1p(torch.tensor(props.domain.t1, dtype=torch.float32))

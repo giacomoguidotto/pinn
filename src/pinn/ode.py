@@ -5,7 +5,7 @@ from typing import Any, override
 import torch
 from torchdiffeq import odeint
 
-from pinn.core import Domain, PINNDataset, Tensor
+from pinn.core import Dataset, Domain, Tensor
 
 ODECallable = Callable[..., Tensor]
 
@@ -18,7 +18,7 @@ class ODEProperties:
     Y0: list[float]
 
 
-class ODEDataset(PINNDataset):
+class ODEDataset(Dataset):
     def __init__(self, props: ODEProperties):
         t0, t1 = props.domain.t0, props.domain.t1
         steps = int(t1 - t0 + 1)

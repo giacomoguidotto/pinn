@@ -10,7 +10,7 @@ import torch.nn as nn
 
 Tensor: TypeAlias = torch.Tensor
 
-PINNDataset: TypeAlias = torch.utils.data.Dataset[Tensor]
+Dataset: TypeAlias = torch.utils.data.Dataset[Tensor]
 
 Activations = Literal[
     "tanh",
@@ -208,7 +208,8 @@ class Problem(nn.Module):
         zeros = torch.zeros_like(collocations)
         res = self.operator.residuals(collocations)
         for k, v in res.items():
-            losses[k] = self.loss_fn(v.value, zeros)
+            v.value = self.loss_fn(v.value, zeros)
+            losses[k] = v
 
         for c in self.constraints:
             for k, v in c.loss(batch).items():

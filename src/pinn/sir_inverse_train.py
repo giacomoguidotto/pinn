@@ -81,7 +81,7 @@ def train_sir_inverse(
         ModelCheckpoint(
             dirpath=temp_dir,
             filename="{epoch:02d}",
-            monitor="train/total_loss",
+            monitor="train/total",
             mode="min",
             save_top_k=1,
             save_last=True,

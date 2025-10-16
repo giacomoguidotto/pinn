@@ -93,7 +93,7 @@ class PINNModule(pl.LightningModule):
             "optimizer": opt,
             "lr_scheduler": {
                 "scheduler": sch,
-                "monitor": f"{self.hp.log_prefix}/total_loss",
+                "monitor": f"{self.hp.log_prefix}/total",
                 "interval": "epoch",
                 "frequency": 1,
             },
