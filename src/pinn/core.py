@@ -214,7 +214,7 @@ class Problem(nn.Module):
             for k, v in c.loss(batch).items():
                 losses[k] = v
 
-        device = next(iter(losses.values())).value.device
+        device = collocations.device
         total = torch.zeros((), dtype=torch.float32, device=device)
         for loss in losses.values():
             total = total + loss.weight * loss.value

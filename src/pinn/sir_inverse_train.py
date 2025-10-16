@@ -27,9 +27,9 @@ def create_temp_dir() -> Path:
     return temp_dir
 
 
-def clean_temp_dir(temp_dir: Path) -> None:
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
+def clean_dir(dir: Path) -> None:
+    if dir.exists():
+        shutil.rmtree(dir)
 
 
 @dataclass
@@ -45,6 +45,8 @@ def train_sir_inverse(
     props: SIRInvProperties, hp: SIRInvHyperparameters, config: SIRInvTrainConfig
 ) -> None:
     # prepare
+    clean_dir(config.tensorboard_dir)
+    clean_dir(config.csv_dir)
     temp_dir = create_temp_dir()
 
     dm = SIRInvDataModule(
@@ -94,13 +96,14 @@ def train_sir_inverse(
         gradient_clip_val=hp.gradient_clip_val,
         logger=loggers,
         callbacks=callbacks,
+        log_every_n_steps=0,
     )
 
     # train
     trainer.fit(module, dm)
 
     # save
-    clean_temp_dir(temp_dir)
+    clean_dir(temp_dir)
 
     trainer.save_checkpoint(
         config.saved_models_dir / f"{config.version}.ckpt",

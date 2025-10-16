@@ -11,3 +11,5 @@ __pycache__
 *.egg-info
 .coverage
 .coverage.*
+
+temp/

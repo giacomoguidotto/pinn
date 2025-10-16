@@ -22,25 +22,25 @@ class SchedulerConfig:
 
 @dataclass
 class EarlyStoppingConfig:
-    patience: int = 50
-    mode: Literal["min", "max"] = "min"
+    patience: int
+    mode: Literal["min", "max"]
 
 
 @dataclass
 class SMMAStoppingConfig:
-    window: int = 50
-    threshold: float = 0.1
-    lookback: int = 50
+    window: int
+    threshold: float
+    lookback: int
 
 
 @dataclass
 class PINNHyperparameters:
-    lr: float = 1e-3
-    batch_size: int = 256
-    max_epochs: int = 1000
-    gradient_clip_val: float = 0.1
-    collocations: int = 4096
-    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    lr: float
+    batch_size: int
+    max_epochs: int
+    gradient_clip_val: float
+    collocations: int
+    scheduler: SchedulerConfig | None = field(default_factory=SchedulerConfig)
     early_stopping: EarlyStoppingConfig | None = None
     smma_stopping: SMMAStoppingConfig | None = None
     log_prefix: str = "train"
@@ -58,7 +58,7 @@ class PINNModule(pl.LightningModule):
         hp: PINNHyperparameters,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["problem"])
 
         self.problem = problem
         self.hp = hp

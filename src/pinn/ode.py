@@ -30,9 +30,7 @@ class ODEDataset(PINNDataset):
         def ode_fn(t: Tensor, y: Tensor) -> Tensor:
             return props.generator(t, y, *props.args)
 
-        sol = odeint(ode_fn, y0, self.t)
-
-        self.data = torch.tensor(sol)
+        self.data: Tensor = odeint(ode_fn, y0, self.t)
 
     @override
     def __getitem__(self, idx: int) -> Tensor:

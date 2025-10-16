@@ -40,11 +40,11 @@ def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
 
 @dataclass
 class SIRInvHyperparameters(PINNHyperparameters):
-    lr = 1e-3
-    batch_size = 256
-    max_epochs = 1000
-    gradient_clip_val = 0.1
-    collocations = 4096
+    lr: float = 1e-3
+    batch_size: int = 256
+    max_epochs: int = 1000
+    gradient_clip_val: float = 0.1
+    collocations: int = 4096
     scheduler = SchedulerConfig(
         mode="min",
         factor=0.5,
@@ -168,7 +168,7 @@ class ICConstraint(Constraint):
         weight_I0: float,
     ):
         # Normalize to N=1
-        self.Y0 = torch.tensor(props.Y0, dtype=torch.float32) / props.N
+        self.Y0 = torch.tensor(props.Y0, dtype=torch.float32)
         self.t0 = torch.tensor(props.domain.t0, dtype=torch.float32)
 
         self.S = field_S
@@ -183,11 +183,13 @@ class ICConstraint(Constraint):
         self.loss_fn = loss_fn
 
     @override
-    def loss(self, _: Batch) -> dict[str, Loss]:
-        S0, I0, _ = self.Y0
+    def loss(self, b: Batch) -> dict[str, Loss]:
+        device = b[0].device
+        t0 = self.t0.to(device)
+        S0, I0, _ = self.Y0.to(device)
 
-        S0_pred = self.S(self.t0)
-        I0_pred = self.I(self.t0)
+        S0_pred = self.S(t0)
+        I0_pred = self.I(t0)
 
         S0_loss = Loss(
             value=self.loss_fn(S0_pred, S0),
@@ -294,9 +296,11 @@ class SIRInvProblem(Problem):
             loss_fn=loss_fn,
         )
 
+        # store modules for device inference
         self.field_S = field_S
         self.field_I = field_I
         self.beta = beta
+
 
 class SIRInvDataset(ODEDataset):
     def __init__(self, props: SIRInvProperties):
@@ -353,12 +357,16 @@ class SIRInvDataModule(pl.LightningDataModule):
             batch_size=self.hp.batch_size,
             shuffle=True,
             num_workers=5,
+            # pin_memory=True, # not supported in MPS yet
+            persistent_workers=True,
         )
         collocations_loader = DataLoader[Tensor](
             self.collocationset,
             batch_size=self.hp.batch_size,
             shuffle=True,
             num_workers=5,
+            # pin_memory=True, # not supported in MPS yet
+            persistent_workers=True,
         )
 
         return (data_loader, collocations_loader)
