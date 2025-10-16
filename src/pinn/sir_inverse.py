@@ -29,12 +29,13 @@ from pinn.ode import ODEDataset, ODEProperties
 SIRCallable: TypeAlias = Callable[[Tensor, Tensor, float, float, float], Tensor]
 
 
-def SIR(x: Tensor, _: Tensor, d: float, b: float, N: float) -> Tensor:
-    S, I, _ = x.unbind()
+def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
+    S, I, _ = y.unbind()
 
-    dR = -b * S * I / N
+    dS = -b * S * I / N
     dI = b * S * I / N - d * I
-    return torch.stack([dR, dI])
+    dR = d * I
+    return torch.stack([dS, dI, dR])
 
 
 @dataclass
@@ -77,12 +78,12 @@ class SIRInvProperties(ODEProperties):
     args: tuple[float, float, float] = (delta, beta, N)
 
     I0: float = 1.0
-    X0: list[float] = None  # type: ignore
+    Y0: list[float] = None  # type: ignore
 
     def __post_init__(self) -> None:
         S0 = self.N - self.I0
         R0 = self.N - self.I0 - S0  # 0 by definition
-        self.X0 = [S0, self.I0, R0]
+        self.Y0 = [S0, self.I0, R0]
 
 
 class SIROperator(Operator):
@@ -109,12 +110,12 @@ class SIROperator(Operator):
         t = t.requires_grad_(True)
         S = self.S(t)
         I = self.I(t)
-        x = torch.stack([S, I])
+        y = torch.stack([S, I, torch.zeros_like(S)])
 
         beta = self.beta(t)
 
-        dx = self.SIR(x, t, self.delta, beta, 1)  # TODO: check scaling everywhere
-        dS_pred, dI_pred = dx.unbind(dim=1)
+        dy = self.SIR(t, y, self.delta, beta, 1)  # TODO: check scaling everywhere
+        dS_pred, dI_pred, _ = dy.unbind(dim=0)
 
         dS = torch.autograd.grad(S, t, torch.ones_like(S), create_graph=True)[0]
         dI = torch.autograd.grad(I, t, torch.ones_like(I), create_graph=True)[0]
@@ -167,7 +168,7 @@ class ICConstraint(Constraint):
         weight_I0: float,
     ):
         # Normalize to N=1
-        self.X0 = torch.tensor(props.X0, dtype=torch.float32) / props.N
+        self.Y0 = torch.tensor(props.Y0, dtype=torch.float32) / props.N
         self.t0 = torch.tensor(props.domain.t0, dtype=torch.float32)
 
         self.S = field_S
@@ -183,7 +184,7 @@ class ICConstraint(Constraint):
 
     @override
     def loss(self, _: Batch) -> dict[str, Loss]:
-        S0, I0, _ = self.X0
+        S0, I0, _ = self.Y0
 
         S0_pred = self.S(self.t0)
         I0_pred = self.I(self.t0)
@@ -293,6 +294,9 @@ class SIRInvProblem(Problem):
             loss_fn=loss_fn,
         )
 
+        self.field_S = field_S
+        self.field_I = field_I
+        self.beta = beta
 
 class SIRInvDataset(ODEDataset):
     def __init__(self, props: SIRInvProperties):

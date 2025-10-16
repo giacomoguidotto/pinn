@@ -15,7 +15,7 @@ class ODEProperties:
     generator: ODECallable
     domain: Domain
     args: tuple[Any, ...]
-    X0: list[float]
+    Y0: list[float]
 
 
 class ODEDataset(PINNDataset):
@@ -24,9 +24,13 @@ class ODEDataset(PINNDataset):
         steps = int(t1 - t0 + 1)
         self.t = torch.linspace(t0, t1, steps)
 
-        x0 = torch.tensor(props.X0, dtype=torch.float32)
+        y0 = torch.tensor(props.Y0, dtype=torch.float32)
 
-        sol = odeint(props.generator, x0, self.t, args=props.args)
+        # TODO: consider a nn.Module for the SIR system
+        def ode_fn(t: Tensor, y: Tensor) -> Tensor:
+            return props.generator(t, y, *props.args)
+
+        sol = odeint(ode_fn, y0, self.t)
 
         self.data = torch.tensor(sol)
 

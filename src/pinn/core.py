@@ -183,7 +183,7 @@ class Constraint(Protocol):
     def loss(self, batch: Batch) -> dict[str, Loss]: ...
 
 
-class Problem:
+class Problem(nn.Module):
     """
     Aggregates operator residuals and constraints into total loss.
     """
@@ -194,6 +194,7 @@ class Problem:
         constraints: list[Constraint],
         loss_fn: nn.Module,
     ):
+        super().__init__()
         self.loss_fn = loss_fn
         self.operator = operator
         self.constraints = constraints
