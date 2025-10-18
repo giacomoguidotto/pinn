@@ -68,10 +68,12 @@ class PINNModule(pl.LightningModule):
 
     @override
     def training_step(self, batch: Batch, batch_idx: int) -> Tensor:
-        total, losses = self.problem.total_loss(batch)
+        total = self.problem.total_loss(batch)
 
-        for k, v in losses.items():
-            self.log(f"{self.hp.log_prefix}/{k}", v, on_step=False, on_epoch=True)
+        prefix = self.hp.log_prefix
+        logs = self.problem.get_logs()
+        for k, (v, prog_bar) in logs.items():
+            self.log(f"{prefix}/{k}", v, on_step=False, on_epoch=True, prog_bar=prog_bar)
 
         return total
 

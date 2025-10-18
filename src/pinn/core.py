@@ -8,10 +8,6 @@ from typing import Literal, Protocol, TypeAlias, override
 import torch
 import torch.nn as nn
 
-Tensor: TypeAlias = torch.Tensor
-
-Dataset: TypeAlias = torch.utils.data.Dataset[Tensor]
-
 Activations = Literal[
     "tanh",
     "relu",
@@ -33,6 +29,27 @@ def get_activation(name: Activations) -> nn.Module:
         "softplus": nn.Softplus(),
         "identity": nn.Identity(),
     }[name]
+
+
+Tensor: TypeAlias = torch.Tensor
+
+Dataset: TypeAlias = torch.utils.data.Dataset[Tensor]
+
+Batch: TypeAlias = tuple[Tensor, Tensor]
+"""
+Batch is a tuple of (data, collocations) where data is a (batch_size, dims) tensor of data points 
+and collocations is a (batch_size) tensor of collocation points over the domain.
+"""
+
+
+@dataclass
+class Loss:
+    """
+    A loss value with a weight. Used to aggregate losses in a weighted sum.
+    """
+
+    value: Tensor
+    weight: float
 
 
 class Field(nn.Module):
@@ -137,33 +154,6 @@ class Parameter(nn.Module):
             return self.net(x)  # type: ignore
 
 
-@dataclass
-class Domain:
-    """
-    Domain for ODE problems: time interval [t0, t1].
-    """
-
-    t0: float
-    t1: float
-
-
-Batch: TypeAlias = tuple[Tensor, Tensor]
-"""
-Batch is a tuple of (data, collocations) where data is a (batch_size, dims) tensor of data points 
-and collocations is a (batch_size) tensor of collocation points over the domain.
-"""
-
-
-@dataclass
-class Loss:
-    """
-    A loss value with a weight. Used to aggregate losses in a weighted sum.
-    """
-
-    value: Tensor
-    weight: float
-
-
 class Operator(Protocol):
     """
     Builds residuals given fields and parameters.
@@ -201,25 +191,26 @@ class Problem(nn.Module):
         for c in self.constraints:
             c.set_loss_fn(loss_fn)
 
-    def total_loss(self, batch: Batch) -> tuple[Tensor, dict[str, Tensor]]:
-        losses: dict[str, Loss] = {}
+        self.logs: dict[str, tuple[Tensor, bool]] = {}
 
+    def total_loss(self, batch: Batch) -> Tensor:
         _, collocations = batch
-        zeros = torch.zeros_like(collocations)
-        res = self.operator.residuals(collocations)
-        for k, v in res.items():
-            v.value = self.loss_fn(v.value, zeros)
-            losses[k] = v
+
+        total = torch.zeros((), dtype=torch.float32, device=collocations.device)
+
+        op = self.operator
+        for k, v in op.residuals(collocations).items():
+            v.value = self.loss_fn(v.value, torch.zeros_like(collocations))
+            total = total + v.weight * v.value
+            self.logs[f"loss/{k}"] = (v.value, False)
 
         for c in self.constraints:
             for k, v in c.loss(batch).items():
-                losses[k] = v
+                total = total + v.weight * v.value
+                self.logs[f"loss/{k}"] = (v.value, False)
 
-        device = collocations.device
-        total = torch.zeros((), dtype=torch.float32, device=device)
-        for loss in losses.values():
-            total = total + loss.weight * loss.value
+        self.logs["total"] = (total, True)
+        return total
 
-        log_losses = {k: v.value for k, v in losses.items()}
-        log_losses["total"] = total
-        return total, log_losses
+    def get_logs(self) -> dict[str, tuple[Tensor, bool]]:
+        return self.logs

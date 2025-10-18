@@ -5,15 +5,25 @@ from typing import Any, override
 import torch
 from torchdiffeq import odeint
 
-from pinn.core import Dataset, Domain, Tensor
+from pinn.core import Dataset, Tensor
 
 ODECallable = Callable[..., Tensor]
 
 
 @dataclass
+class Domain1D:
+    """
+    One-dimensional domain: time interval [t0, t1].
+    """
+
+    t0: float
+    t1: float
+
+
+@dataclass
 class ODEProperties:
     generator: ODECallable
-    domain: Domain
+    domain: Domain1D
     args: tuple[Any, ...]
     Y0: list[float]
 

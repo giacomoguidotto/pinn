@@ -15,7 +15,6 @@ from pinn.core import (
     Batch,
     Constraint,
     Dataset,
-    Domain,
     Field,
     Loss,
     Operator,
@@ -24,7 +23,7 @@ from pinn.core import (
     Tensor,
 )
 from pinn.module import PINNHyperparameters, SchedulerConfig
-from pinn.ode import ODEDataset, ODEProperties
+from pinn.ode import Domain1D, ODEDataset, ODEProperties
 
 SIRCallable: TypeAlias = Callable[[Tensor, Tensor, float, float, float], Tensor]
 
@@ -69,8 +68,13 @@ class SIRInvHyperparameters(PINNHyperparameters):
 
 @dataclass
 class SIRInvProperties(ODEProperties):
-    domain: Domain = field(default_factory=lambda: Domain(t0=0.0, t1=90.0))
     generator: SIRCallable = field(default_factory=lambda: SIR)
+    domain: Domain1D = field(
+        default_factory=lambda: Domain1D(
+            t0=0.0,
+            t1=90.0,
+        )
+    )
 
     N: float = 56e6
     delta: float = 1 / 5
@@ -98,6 +102,7 @@ class SIROperator(Operator):
     ):
         self.SIR = props.generator
         self.delta = props.delta
+        self.N = props.N
 
         self.S = field_S
         self.I = field_I
@@ -114,7 +119,7 @@ class SIROperator(Operator):
 
         beta = self.beta(t)
 
-        dy = self.SIR(t, y, self.delta, beta, 1)  # TODO: check scaling everywhere
+        dy = self.SIR(t, y, self.delta, beta, self.N)
         dS_pred, dI_pred, _ = dy.unbind(dim=0)
 
         dS = torch.autograd.grad(S, t, torch.ones_like(S), create_graph=True)[0]
@@ -125,7 +130,7 @@ class SIROperator(Operator):
 
         loss_S = Loss(value=S_res, weight=self.weight_S)
         loss_I = Loss(value=I_res, weight=self.weight_I)
-        return {"pde/sir_S": loss_S, "pde/sir_I": loss_I}
+        return {"res/S": loss_S, "res/I": loss_I}
 
 
 class DataConstraint(Constraint):
@@ -300,10 +305,18 @@ class SIRInvProblem(Problem):
             loss_fn=loss_fn,
         )
 
-        # store modules for device inference
+        # assign modules after __init__ to register parameters
         self.field_S = field_S
         self.field_I = field_I
         self.beta = beta
+
+    @override
+    def get_logs(self) -> dict[str, tuple[Tensor, bool]]:
+        logs = super().get_logs()
+
+        # log beta parameter, only if scalar
+        logs["beta"] = (self.beta.forward(), True)
+        return logs
 
 
 class SIRInvDataset(ODEDataset):

@@ -9,6 +9,7 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
 
+from pinn.callbacks import SMMAStopping
 from pinn.module import PINNModule
 from pinn.sir_inverse import (
     SIRInvDataModule,
@@ -81,7 +82,7 @@ def train_sir_inverse(
         ModelCheckpoint(
             dirpath=temp_dir,
             filename="{epoch:02d}",
-            monitor="train/total",
+            monitor=f"{hp.log_prefix}/total",
             mode="min",
             save_top_k=1,
             save_last=True,
@@ -90,6 +91,15 @@ def train_sir_inverse(
             logging_interval="epoch",
         ),
     ]
+
+    if hp.smma_stopping:
+        callbacks.append(
+            SMMAStopping(
+                config=hp.smma_stopping,
+                loss_key=f"{hp.log_prefix}/total",
+                log_key=f"{hp.log_prefix}/total_smma",
+            ),
+        )
 
     trainer = Trainer(
         max_epochs=hp.max_epochs,
