@@ -8,22 +8,22 @@ from typing import TypeAlias, override
 import lightning.pytorch as pl
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from pinn.core import (
     Activations,
     Batch,
     Constraint,
-    Dataset,
     Field,
     Loss,
+    MixedPINNIterable,
     Operator,
     Parameter,
     Problem,
     Tensor,
 )
-from pinn.module import PINNHyperparameters, SchedulerConfig
-from pinn.ode import Domain1D, ODEDataset, ODEProperties
+from pinn.lightning.module import PINNHyperparameters, SchedulerConfig
+from pinn.problems.ode import Domain1D, ODEDataset, ODEProperties
 
 SIRCallable: TypeAlias = Callable[[Tensor, Tensor, float, float, float], Tensor]
 
@@ -39,11 +39,12 @@ def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
 
 @dataclass
 class SIRInvHyperparameters(PINNHyperparameters):
-    lr: float = 1e-3
-    batch_size: int = 91  # FIXME: dataloader is not batching correctly
+    batch_size: int = 256
     max_epochs: int = 1000
-    gradient_clip_val: float = 0.1
     collocations: int = 4096
+    data_ratio: float = 0.25
+    lr: float = 1e-3
+    gradient_clip_val: float = 0.1
     scheduler = SchedulerConfig(
         mode="min",
         factor=0.5,
@@ -82,7 +83,7 @@ class SIRInvProperties(ODEProperties):
     args: tuple[float, float, float] = (delta, beta, N)
 
     I0: float = 1.0
-    Y0: list[float] = None  # type: ignore
+    Y0: list[float] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         S0 = self.N - self.I0
@@ -151,9 +152,9 @@ class DataConstraint(Constraint):
 
     @override
     def loss(self, batch: Batch) -> dict[str, Loss]:
-        (t, I_data), _ = batch
+        (t_data, I_data), _ = batch
 
-        I_pred = self.I(t)
+        I_pred = self.I(t_data)
 
         data_loss = Loss(
             value=self.loss_fn(I_pred, I_data),
@@ -188,8 +189,8 @@ class ICConstraint(Constraint):
 
     @override
     def loss(self, batch: Batch) -> dict[str, Loss]:
-        _, collocations = batch
-        device = collocations.device
+        _, t_colloc = batch
+        device = t_colloc.device
 
         t0 = self.t0.to(device)
         S0, I0, _ = self.Y0.to(device)
@@ -228,9 +229,9 @@ class BetaSmoothness(Constraint):
 
     @override
     def loss(self, batch: Batch) -> dict[str, Loss]:
-        _, collocations = batch
+        _, t_colloc = batch
 
-        t = collocations.requires_grad_(True)
+        t = t_colloc.requires_grad_(True)
         b = self.beta(t)
         db = torch.autograd.grad(b, t, torch.ones_like(b), create_graph=True)[0]
 
@@ -334,10 +335,10 @@ class SIRInvDataset(ODEDataset):
 
     @override
     def __len__(self) -> int:
-        return self.obs.shape[1]
+        return self.obs.shape[0]
 
 
-class SIRInvCollocationset(Dataset):
+class SIRInvCollocationset(Dataset[Tensor]):
     def __init__(self, props: SIRInvProperties, hp: SIRInvHyperparameters):
         t0_s = torch.log1p(torch.tensor(props.domain.t0, dtype=torch.float32))
         t1_s = torch.log1p(torch.tensor(props.domain.t1, dtype=torch.float32))
@@ -368,22 +369,21 @@ class SIRInvDataModule(pl.LightningDataModule):
         self.collocationset = SIRInvCollocationset(self.props, self.hp)
 
     @override
-    def train_dataloader(self) -> tuple[DataLoader[Tensor], DataLoader[Tensor]]:
-        data_loader = DataLoader[Tensor](
-            self.dataset,
+    def train_dataloader(self) -> DataLoader[Batch]:
+        # Create MixedPINNIterable to combine data and collocation points
+        mixed_dataset = MixedPINNIterable(
+            data_ds=self.dataset,
+            colloc_ds=self.collocationset,
             batch_size=self.hp.batch_size,
-            shuffle=True,
-            num_workers=5,
-            # pin_memory=True, # not supported in MPS yet
-            persistent_workers=True,
-        )
-        collocations_loader = DataLoader[Tensor](
-            self.collocationset,
-            batch_size=self.hp.batch_size,
-            shuffle=True,
-            num_workers=5,
-            # pin_memory=True, # not supported in MPS yet
-            persistent_workers=True,
+            data_ratio=self.hp.data_ratio,
+            drop_last=False,
+            data_replacement=False,
+            colloc_replacement=True,  # Allow infinite collocation sampling
         )
 
-        return (data_loader, collocations_loader)
+        return DataLoader[Batch](
+            mixed_dataset,
+            batch_size=1,  # MixedPINNIterable handles batching internally
+            num_workers=0,  # Avoid multiprocessing issues in tests
+            persistent_workers=False,
+        )

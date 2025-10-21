@@ -1,4 +1,3 @@
-# src/pinn/pinn_module.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -35,11 +34,13 @@ class SMMAStoppingConfig:
 
 @dataclass
 class PINNHyperparameters:
-    lr: float
     batch_size: int
     max_epochs: int
-    gradient_clip_val: float
     collocations: int
+    data_ratio: float = field(metadata={"range": (0.0, 1.0)})
+    """Ratio of data points to collocate per batch."""
+    lr: float
+    gradient_clip_val: float
     scheduler: SchedulerConfig | None = field(default_factory=SchedulerConfig)
     early_stopping: EarlyStoppingConfig | None = None
     smma_stopping: SMMAStoppingConfig | None = None

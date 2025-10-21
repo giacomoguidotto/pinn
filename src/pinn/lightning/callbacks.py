@@ -5,7 +5,7 @@ from typing import override
 from lightning.pytorch import LightningModule, Trainer
 from lightning.pytorch.callbacks import Callback
 
-from pinn.module import SMMAStoppingConfig
+from pinn.lightning.module import SMMAStoppingConfig
 
 
 class SMMAStopping(Callback):

@@ -1,4 +1,3 @@
-# src/pinn/core.py
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -33,9 +32,8 @@ def get_activation(name: Activations) -> nn.Module:
 
 Tensor: TypeAlias = torch.Tensor
 
-Dataset: TypeAlias = torch.utils.data.Dataset[Tensor]
 
-Batch: TypeAlias = tuple[Tensor, Tensor]
+Batch: TypeAlias = tuple[tuple[Tensor, Tensor], Tensor]
 """
 Batch is a tuple of (data, collocations) where data is a (batch_size, dims) tensor of data points 
 and collocations is a (batch_size) tensor of collocation points over the domain.
@@ -194,13 +192,13 @@ class Problem(nn.Module):
         self.logs: dict[str, tuple[Tensor, bool]] = {}
 
     def total_loss(self, batch: Batch) -> Tensor:
-        _, collocations = batch
+        _, colloc = batch
 
-        total = torch.zeros((), dtype=torch.float32, device=collocations.device)
+        total = torch.zeros((), dtype=torch.float32, device=colloc.device)
 
         op = self.operator
-        for k, v in op.residuals(collocations).items():
-            v.value = self.loss_fn(v.value, torch.zeros_like(collocations))
+        for k, v in op.residuals(colloc).items():
+            v.value = self.loss_fn(v.value, torch.zeros_like(colloc))
             total = total + v.weight * v.value
             self.logs[f"loss/{k}"] = (v.value, False)
 

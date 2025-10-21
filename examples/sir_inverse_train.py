@@ -9,14 +9,8 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
 
-from pinn.callbacks import SMMAStopping
-from pinn.module import PINNModule
-from pinn.sir_inverse import (
-    SIRInvDataModule,
-    SIRInvHyperparameters,
-    SIRInvProblem,
-    SIRInvProperties,
-)
+from pinn.lightning import PINNModule, SMMAStopping
+from pinn.problems import SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem, SIRInvProperties
 
 
 def create_temp_dir() -> Path:

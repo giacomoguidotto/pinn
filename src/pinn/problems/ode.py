@@ -3,9 +3,10 @@ from dataclasses import dataclass
 from typing import Any, override
 
 import torch
+from torch.utils.data import Dataset
 from torchdiffeq import odeint
 
-from pinn.core import Dataset, Tensor
+from pinn.core import Tensor
 
 ODECallable = Callable[..., Tensor]
 
@@ -28,7 +29,7 @@ class ODEProperties:
     Y0: list[float]
 
 
-class ODEDataset(Dataset):
+class ODEDataset(Dataset[Tensor]):
     def __init__(self, props: ODEProperties):
         t0, t1 = props.domain.t0, props.domain.t1
         steps = int(t1 - t0 + 1)
@@ -47,4 +48,4 @@ class ODEDataset(Dataset):
         return self.data[idx]
 
     def __len__(self) -> int:
-        return len(self.data)
+        return self.data.shape[0]
