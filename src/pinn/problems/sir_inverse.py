@@ -16,9 +16,9 @@ from pinn.core import (
     Constraint,
     Field,
     Loss,
-    MixedPINNIterable,
     Operator,
     Parameter,
+    PINNDataset,
     Problem,
     Tensor,
 )
@@ -266,7 +266,7 @@ class SIRInvProblem(Problem):
         # )
         beta = Parameter(
             mode="scalar",
-            init_value=props.beta,
+            init_value=0.5,
             name="beta",
         )
 
@@ -370,20 +370,15 @@ class SIRInvDataModule(pl.LightningDataModule):
 
     @override
     def train_dataloader(self) -> DataLoader[Batch]:
-        # Create MixedPINNIterable to combine data and collocation points
-        mixed_dataset = MixedPINNIterable(
+        mixed_dataset = PINNDataset(
             data_ds=self.dataset,
-            colloc_ds=self.collocationset,
+            coll_ds=self.collocationset,
             batch_size=self.hp.batch_size,
             data_ratio=self.hp.data_ratio,
-            drop_last=False,
-            data_replacement=False,
-            colloc_replacement=True,  # Allow infinite collocation sampling
         )
 
         return DataLoader[Batch](
             mixed_dataset,
-            batch_size=1,  # MixedPINNIterable handles batching internally
+            batch_size=None,  # PINNDataset handles batching internally
             num_workers=0,  # Avoid multiprocessing issues in tests
-            persistent_workers=False,
         )

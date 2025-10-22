@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol, TypeAlias, override
+from typing import Literal, Protocol, override
 
 import torch
+from torch import Tensor
 import torch.nn as nn
+
+from pinn.core.dataset import Batch
 
 Activations = Literal[
     "tanh",
@@ -28,16 +31,6 @@ def get_activation(name: Activations) -> nn.Module:
         "softplus": nn.Softplus(),
         "identity": nn.Identity(),
     }[name]
-
-
-Tensor: TypeAlias = torch.Tensor
-
-
-Batch: TypeAlias = tuple[tuple[Tensor, Tensor], Tensor]
-"""
-Batch is a tuple of (data, collocations) where data is a (batch_size, dims) tensor of data points 
-and collocations is a (batch_size) tensor of collocation points over the domain.
-"""
 
 
 @dataclass

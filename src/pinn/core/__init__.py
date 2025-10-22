@@ -12,7 +12,7 @@ from pinn.core.core import (
     Tensor,
     get_activation,
 )
-from pinn.core.dataset import MixedPINNIterable
+from pinn.core.dataset import PINNDataset
 
 __all__ = [
     "Activations",
@@ -20,8 +20,8 @@ __all__ = [
     "Constraint",
     "Field",
     "Loss",
-    "MixedPINNIterable",
     "Operator",
+    "PINNDataset",
     "Parameter",
     "Problem",
     "Tensor",
