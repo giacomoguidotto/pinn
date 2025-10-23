@@ -3,10 +3,9 @@ from dataclasses import dataclass
 from typing import Any, override
 
 import torch
+from torch import Tensor
 from torch.utils.data import Dataset
 from torchdiffeq import odeint
-
-from pinn.core import Tensor
 
 ODECallable = Callable[..., Tensor]
 

@@ -6,8 +6,9 @@ from typing import Literal, override
 import lightning.pytorch as pl
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 import torch
+from torch import Tensor
 
-from pinn.core import Batch, Problem, Tensor
+from pinn.core import Batch, Problem
 
 
 @dataclass

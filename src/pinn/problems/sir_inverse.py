@@ -7,6 +7,7 @@ from typing import TypeAlias, override
 
 import lightning.pytorch as pl
 import torch
+from torch import Tensor
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
@@ -20,7 +21,6 @@ from pinn.core import (
     Parameter,
     PINNDataset,
     Problem,
-    Tensor,
 )
 from pinn.lightning.module import PINNHyperparameters, SchedulerConfig
 from pinn.problems.ode import Domain1D, ODEDataset, ODEProperties
