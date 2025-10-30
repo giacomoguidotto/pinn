@@ -22,7 +22,7 @@ class Domain1D:
 
 @dataclass
 class ODEProperties:
-    generator: ODECallable
+    ode: ODECallable
     domain: Domain1D
     args: tuple[Any, ...]
     Y0: list[float]
@@ -36,9 +36,8 @@ class ODEDataset(Dataset[Tensor]):
 
         y0 = torch.tensor(props.Y0, dtype=torch.float32)
 
-        # TODO: consider a nn.Module for the SIR system
         def ode_fn(t: Tensor, y: Tensor) -> Tensor:
-            return props.generator(t, y, *props.args)
+            return props.ode(t, y, *props.args)
 
         self.data: Tensor = odeint(ode_fn, y0, self.t)
 

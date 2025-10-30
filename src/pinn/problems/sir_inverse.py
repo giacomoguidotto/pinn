@@ -39,10 +39,10 @@ def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
 
 @dataclass
 class SIRInvHyperparameters(PINNHyperparameters):
-    batch_size: int = 256
     max_epochs: int = 1000
+    batch_size: int = 512
+    data_ratio: int | float = 16
     collocations: int = 4096
-    data_ratio: float = 0.25
     lr: float = 1e-3
     gradient_clip_val: float = 0.1
     scheduler = SchedulerConfig(
@@ -69,7 +69,7 @@ class SIRInvHyperparameters(PINNHyperparameters):
 
 @dataclass
 class SIRInvProperties(ODEProperties):
-    generator: SIRCallable = field(default_factory=lambda: SIR)
+    ode: SIRCallable = field(default_factory=lambda: SIR)
     domain: Domain1D = field(
         default_factory=lambda: Domain1D(
             t0=0.0,
@@ -101,7 +101,7 @@ class SIROperator(Operator):
         weight_I: float,
         beta: Parameter,
     ):
-        self.SIR = props.generator
+        self.SIR = props.ode
         self.delta = props.delta
         self.N = props.N
 
@@ -172,7 +172,6 @@ class ICConstraint(Constraint):
         weight_S0: float,
         weight_I0: float,
     ):
-        # Normalize to N=1
         self.Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
         self.t0 = torch.tensor(props.domain.t0, dtype=torch.float32).reshape(1, 1)
 
@@ -181,7 +180,7 @@ class ICConstraint(Constraint):
         self.weight_S0 = weight_S0
         self.weight_I0 = weight_I0
 
-        self.loss_fn: nn.Module = nn.MSELoss()
+        self.loss_fn: nn.Module
 
     @override
     def set_loss_fn(self, loss_fn: nn.Module) -> None:
@@ -189,6 +188,8 @@ class ICConstraint(Constraint):
 
     @override
     def loss(self, batch: Batch) -> dict[str, Loss]:
+        assert self.loss_fn is not None
+
         _, t_colloc = batch
         device = t_colloc.device
 

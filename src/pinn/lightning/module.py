@@ -35,11 +35,10 @@ class SMMAStoppingConfig:
 
 @dataclass
 class PINNHyperparameters:
-    batch_size: int
     max_epochs: int
+    batch_size: int
+    data_ratio: int | float
     collocations: int
-    data_ratio: float = field(metadata={"range": (0.0, 1.0)})
-    """Ratio of data points to collocate per batch."""
     lr: float
     gradient_clip_val: float
     scheduler: SchedulerConfig | None = field(default_factory=SchedulerConfig)
@@ -75,7 +74,14 @@ class PINNModule(pl.LightningModule):
         prefix = self.hp.log_prefix
         logs = self.problem.get_logs()
         for k, (v, prog_bar) in logs.items():
-            self.log(f"{prefix}/{k}", v, on_step=False, on_epoch=True, prog_bar=prog_bar)
+            self.log(
+                f"{prefix}/{k}",
+                v,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=prog_bar,
+                batch_size=self.hp.batch_size,
+            )
 
         return total
 
