@@ -191,7 +191,7 @@ class Problem(nn.Module):
 
         op = self.operator
         for k, v in op.residuals(colloc).items():
-            v.value = self.loss_fn(v.value, torch.zeros_like(colloc))
+            v.value = self.loss_fn(v.value, torch.zeros_like(v.value))
             total = total + v.weight * v.value
             self.logs[f"loss/{k}"] = (v.value, False)
 

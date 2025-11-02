@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TypeAlias, override
+from typing import TypeAlias, cast, override
 
 import lightning.pytorch as pl
 import torch
@@ -22,6 +22,7 @@ from pinn.core import (
     PINNDataset,
     Problem,
 )
+from pinn.core.dataset import Scaler
 from pinn.lightning.module import PINNHyperparameters, SchedulerConfig
 from pinn.problems.ode import Domain1D, ODEDataset, ODEProperties
 
@@ -100,10 +101,11 @@ class SIROperator(Operator):
         weight_S: float,
         weight_I: float,
         beta: Parameter,
+        scaler: SIRInvScaler,
     ):
         self.SIR = props.ode
         self.delta = props.delta
-        self.N = props.N
+        self.N = cast(float, scaler.scale_data(props.N))  # type: ignore
 
         self.S = field_S
         self.I = field_I
@@ -116,7 +118,8 @@ class SIROperator(Operator):
         t = t.requires_grad_(True)
         S = self.S(t)
         I = self.I(t)
-        y = torch.stack([S, I, torch.zeros_like(S)])
+        R = self.N - S - I
+        y = torch.stack([S, I, R])
 
         beta = self.beta(t)
 
@@ -171,9 +174,13 @@ class ICConstraint(Constraint):
         field_I: Field,
         weight_S0: float,
         weight_I0: float,
+        scaler: SIRInvScaler,
     ):
-        self.Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
-        self.t0 = torch.tensor(props.domain.t0, dtype=torch.float32).reshape(1, 1)
+        Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
+        t0 = torch.tensor(props.domain.t0, dtype=torch.float32).reshape(1, 1)
+
+        self.Y0 = scaler.scale_data(Y0)
+        self.t0 = t0
 
         self.S = field_S
         self.I = field_I
@@ -188,10 +195,7 @@ class ICConstraint(Constraint):
 
     @override
     def loss(self, batch: Batch) -> dict[str, Loss]:
-        assert self.loss_fn is not None
-
-        _, t_colloc = batch
-        device = t_colloc.device
+        device = batch[1].device
 
         t0 = self.t0.to(device)
         S0, I0, _ = self.Y0.to(device)
@@ -248,6 +252,7 @@ class SIRInvProblem(Problem):
         self,
         props: SIRInvProperties,
         hp: SIRInvHyperparameters,
+        scaler: SIRInvScaler,
     ) -> None:
         in_dim, out_dim = 1, 1
         field_S = Field(
@@ -278,6 +283,7 @@ class SIRInvProblem(Problem):
             weight_S=hp.pde_weight,
             weight_I=hp.pde_weight,
             beta=beta,
+            scaler=scaler,
         )
 
         constraints: list[Constraint] = [
@@ -287,6 +293,7 @@ class SIRInvProblem(Problem):
                 field_I=field_I,
                 weight_S0=hp.ic_weight,
                 weight_I0=hp.ic_weight,
+                scaler=scaler,
             ),
             DataConstraint(
                 field_S=field_S,
@@ -323,7 +330,7 @@ class SIRInvProblem(Problem):
 
 class SIRInvDataset(ODEDataset):
     def __init__(self, props: SIRInvProperties):
-        # generate SIR components into self.data
+        # SIR components are generated in self.data
         super().__init__(props)
 
         I = self.data[:, 1].clamp_min(0.0)
@@ -357,15 +364,30 @@ class SIRInvCollocationset(Dataset[Tensor]):
         return len(self.t)
 
 
+class SIRInvScaler(Scaler):
+    def __init__(self, props: SIRInvProperties):
+        self.props = props
+
+    @override
+    def scale_domain(self, domain: Tensor) -> Tensor:
+        return domain
+
+    @override
+    def scale_data(self, data: Tensor) -> Tensor:
+        return data / self.props.N
+
+
 class SIRInvDataModule(pl.LightningDataModule):
     def __init__(
         self,
         props: SIRInvProperties,
         hp: SIRInvHyperparameters,
+        scaler: SIRInvScaler,
     ):
         super().__init__()
         self.props = props
         self.hp = hp
+        self.scaler = scaler
 
     @override
     def setup(self, stage: str | None = None) -> None:
@@ -379,10 +401,11 @@ class SIRInvDataModule(pl.LightningDataModule):
             coll_ds=self.collocationset,
             batch_size=self.hp.batch_size,
             data_ratio=self.hp.data_ratio,
+            scaler=self.scaler,
         )
 
         return DataLoader[Batch](
             mixed_dataset,
-            batch_size=None,  # PINNDataset handles batching internally
-            num_workers=0,  # Avoid multiprocessing issues in tests
+            batch_size=None,  # handled internally
+            num_workers=0,
         )

@@ -11,6 +11,7 @@ from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
 
 from pinn.lightning import PINNModule, SMMAStopping
 from pinn.problems import SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem, SIRInvProperties
+from pinn.problems.sir_inverse import SIRInvScaler
 
 
 def create_temp_dir() -> Path:
@@ -44,14 +45,18 @@ def train_sir_inverse(
     clean_dir(config.csv_dir)
     temp_dir = create_temp_dir()
 
+    scaler = SIRInvScaler(props)
+
     dm = SIRInvDataModule(
         props=props,
         hp=hp,
+        scaler=scaler,
     )
 
     problem = SIRInvProblem(
         props=props,
         hp=hp,
+        scaler=scaler,
     )
 
     module = PINNModule(
@@ -108,7 +113,6 @@ def train_sir_inverse(
 
     # save
     clean_dir(temp_dir)
-
     trainer.save_checkpoint(
         config.saved_models_dir / f"{config.version}.ckpt",
     )

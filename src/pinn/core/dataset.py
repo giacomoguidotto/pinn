@@ -13,12 +13,13 @@ shape (collocations_size, 1) of collocation points over the domain.
 """
 
 
-class TransformBatch(Protocol):
+class Scaler(Protocol):
     """
     Apply a transformation to a batch of data and collocations.
     """
 
-    def __call__(self, batch: Batch) -> Batch: ...
+    def scale_domain(self, domain: Tensor) -> Tensor: ...
+    def scale_data(self, data: Tensor) -> Tensor: ...
 
 
 class PINNDataset(Dataset[Batch]):
@@ -48,7 +49,7 @@ class PINNDataset(Dataset[Batch]):
         coll_ds: Dataset[Tensor],
         batch_size: int,
         data_ratio: float | int,
-        transform: TransformBatch | None = None,
+        scaler: Scaler | None = None,
     ):
         super().__init__()
         assert batch_size > 0
@@ -65,7 +66,7 @@ class PINNDataset(Dataset[Batch]):
 
         self.batch_size = batch_size
         self.C = batch_size - self.K
-        self.transform = transform
+        self.scaler = scaler
 
         self.total_data = len(cast(Sized, data_ds))
         self.total_coll = len(cast(Sized, coll_ds))
@@ -86,18 +87,19 @@ class PINNDataset(Dataset[Batch]):
         t_coll = torch.empty_like(coll_idx).unsqueeze(-1)
 
         data = self.data_ds[data_idx]
-        # assert data.shape == (data_idx.shape[0], 2, 1)
         t_data = data[:, 0, 0:1]
         y_data = data[:, 1, 0:1]
 
         colloc = self.coll_ds[coll_idx]
-        # assert colloc.shape == (coll_idx.shape[0], 1)
         t_coll = colloc[:, 0:1]
 
         batch = ((t_data, y_data), t_coll)
 
-        if self.transform is not None:
-            batch = self.transform(batch)
+        if self.scaler is not None:
+            t_data = self.scaler.scale_domain(t_data)
+            y_data = self.scaler.scale_data(y_data)
+            t_coll = self.scaler.scale_domain(t_coll)
+            batch = ((t_data, y_data), t_coll)
         return batch
 
     def _get_data_indices(self, idx: int) -> Tensor:
@@ -118,10 +120,4 @@ class PINNDataset(Dataset[Batch]):
 
         temp_generator = torch.Generator()
         temp_generator.manual_seed(idx)
-
-        return torch.randint(
-            0,
-            self.total_coll,
-            (self.C,),
-            generator=temp_generator,
-        )
+        return torch.randint(0, self.total_coll, (self.C,), generator=temp_generator)
