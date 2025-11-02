@@ -327,7 +327,10 @@ class SIRInvDataset(ODEDataset):
         super().__init__(props)
 
         I = self.data[:, 1].clamp_min(0.0)
-        I_obs = torch.poisson(I)
+
+        # noising I
+        noise_level = 2e4  # TODO: make this a parameter
+        I_obs = torch.poisson(I / noise_level) * noise_level
         self.obs = torch.stack((self.t, I_obs), dim=1).unsqueeze(-1)
 
     @override

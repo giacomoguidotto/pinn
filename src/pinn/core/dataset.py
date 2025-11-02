@@ -1,5 +1,5 @@
 from collections.abc import Sized
-from typing import TypeAlias, cast, override
+from typing import Protocol, TypeAlias, cast, override
 
 import torch
 from torch import Tensor
@@ -13,17 +13,33 @@ shape (collocations_size, 1) of collocation points over the domain.
 """
 
 
+class TransformBatch(Protocol):
+    """
+    Apply a transformation to a batch of data and collocations.
+    """
+
+    def __call__(self, batch: Batch) -> Batch: ...
+
+
 class PINNDataset(Dataset[Batch]):
     """
-    Map-style dataset that mixes labeled data and collocation points per sample.
+    Dataset used for PINN training. Combines labeled data and collocation points
+    per sample.  Given a data_ratio, the amount of data points `K` is determined
+    either by applying `data_ratio * batch_size` if ratio is a float between 0
+    and 1 or by an absolute count if ratio is an integer. The remaining `C`
+    points are used for collocation.  The data points are sampled without
+    replacement per epoch i.e. cycles through all data points and at the last
+    batch, wraps around to the first indices to ensure batch size. The collocation
+    points are sampled with replacement from the pool.
+    The dataset produces a batch of shape ((t_data[K,1], y_data[K,1]), t_coll[C,1]).
 
-    - Each sample contains K data points and C collocation points.
-    - K is derived from `data_ratio` parameter (ratio [0,1] or absolute count [0,B]).
-    - C = batch_size - K.
-    - Data points are sampled without replacement per epoch (cycles through all data).
-    - Collocation points are sampled with replacement from the pool.
-    - One epoch = one pass through all data points.
-    - Shapes produced: ((t_data[K,1], y_data[K,1]), t_colloc[C,1])
+    Args:
+        data_ds: Dataset of data points.
+        coll_ds: Dataset of collocation points.
+        batch_size: Size of the batch.
+        data_ratio: Ratio of data points to collocation points, either as a ratio [0,1] or absolute
+            count [0,batch_size].
+        transform: Optional transformation to apply to the batch.
     """
 
     def __init__(
@@ -31,7 +47,8 @@ class PINNDataset(Dataset[Batch]):
         data_ds: Dataset[Tensor],
         coll_ds: Dataset[Tensor],
         batch_size: int,
-        data_ratio: float | int,  # ratio [0,1] or absolute count [0,B]
+        data_ratio: float | int,
+        transform: TransformBatch | None = None,
     ):
         super().__init__()
         assert batch_size > 0
@@ -45,75 +62,66 @@ class PINNDataset(Dataset[Batch]):
 
         self.data_ds = data_ds
         self.coll_ds = coll_ds
+
         self.batch_size = batch_size
         self.C = batch_size - self.K
+        self.transform = transform
 
         self.total_data = len(cast(Sized, data_ds))
         self.total_coll = len(cast(Sized, coll_ds))
 
     def __len__(self) -> int:
-        """Number of steps per epoch to see all data points once."""
-        # ceiling division
+        """Number of steps per epoch to see all data points once. Ceiling division."""
         return (self.total_data + self.K - 1) // self.K
 
     @override
     def __getitem__(self, idx: int) -> Batch:
         """Return one sample containing K data points and C collocation points."""
-        # Sample K data points without replacement (cycling through epoch)
-        data_indices = self._get_data_indices(idx)
-        colloc_indices = self._get_colloc_indices(idx)
+        data_idx = self._get_data_indices(idx)
+        coll_idx = self._get_coll_indices(idx)
 
-        if data_indices:
-            # Pre-allocate output tensors
-            t_data = torch.empty(len(data_indices), 1)
-            y_data = torch.empty(len(data_indices), 1)
+        # prealloc
+        t_data = torch.empty_like(data_idx).unsqueeze(-1)
+        y_data = torch.empty_like(data_idx).unsqueeze(-1)
+        t_coll = torch.empty_like(coll_idx).unsqueeze(-1)
 
-            # Single loop with direct tensor assignment (no intermediate lists)
-            for i, data_idx in enumerate(data_indices):
-                sample = self.data_ds[data_idx]  # [2, 1]
-                t_data[i, 0] = sample[0, 0]  # Direct assignment
-                y_data[i, 0] = sample[1, 0]  # Direct assignment
-        else:
-            t_data = torch.empty(0, 1)
-            y_data = torch.empty(0, 1)
+        data = self.data_ds[data_idx]
+        # assert data.shape == (data_idx.shape[0], 2, 1)
+        t_data = data[:, 0, 0:1]
+        y_data = data[:, 1, 0:1]
 
-        # Maximum efficiency collocation processing
-        if colloc_indices:
-            # Pre-allocate output tensor
-            t_colloc = torch.empty(len(colloc_indices), 1)
+        colloc = self.coll_ds[coll_idx]
+        # assert colloc.shape == (coll_idx.shape[0], 1)
+        t_coll = colloc[:, 0:1]
 
-            # Single loop with direct tensor assignment
-            for i, colloc_idx in enumerate(colloc_indices):
-                sample = self.coll_ds[colloc_idx]  # [1]
-                t_colloc[i, 0] = sample[0]  # Direct assignment
-        else:
-            t_colloc = torch.empty(0, 1)
+        batch = ((t_data, y_data), t_coll)
 
-        return ((t_data, y_data), t_colloc)
+        if self.transform is not None:
+            batch = self.transform(batch)
+        return batch
 
-    def _get_data_indices(self, idx: int) -> list[int]:
-        """Get data indices for this step without replacement."""
+    def _get_data_indices(self, idx: int) -> Tensor:
+        """Get data indices for this step without replacement.
+        When getting the last batch, wrap around to the first indices to ensure batch size.
+        """
         if self.total_data == 0:
-            return []
+            return torch.empty(0, 1)
 
-        start_idx = idx * self.K
-        end_idx = min(start_idx + self.K, self.total_data)
+        start = idx * self.K
+        indices = [(start + i) % self.total_data for i in range(self.K)]
+        return torch.tensor(indices)
 
-        if end_idx - start_idx < self.K:
-            remaining = self.K - (end_idx - start_idx)
-            indices = list(range(start_idx, end_idx)) + list(range(remaining))
-        else:
-            indices = list(range(start_idx, end_idx))
-
-        return indices
-
-    def _get_colloc_indices(self, idx: int) -> list[int]:
+    def _get_coll_indices(self, idx: int) -> Tensor:
         """Get collocation indices for this step with replacement."""
         if self.total_coll == 0:
-            return []
+            return torch.empty(0, 1)
 
         temp_generator = torch.Generator()
         temp_generator.manual_seed(idx)
 
-        indices = torch.randint(0, self.total_coll, (self.C,), generator=temp_generator).tolist()
-        return indices
+        return torch.randint(
+            0,
+            self.total_coll,
+            (self.C,),
+            generator=temp_generator,
+        )
