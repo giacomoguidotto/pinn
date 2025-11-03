@@ -40,9 +40,9 @@ def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
 
 @dataclass
 class SIRInvHyperparameters(PINNHyperparameters):
-    max_epochs: int = 1000
+    max_epochs: int = 5000
     batch_size: int = 512
-    data_ratio: int | float = 16
+    data_ratio: int | float = 4
     collocations: int = 4096
     lr: float = 1e-3
     gradient_clip_val: float = 0.1
@@ -124,7 +124,7 @@ class SIROperator(Operator):
         beta = self.beta(t)
 
         dy = self.SIR(t, y, self.delta, beta, self.N)
-        dS_pred, dI_pred, _ = dy.unbind(dim=0)
+        dS_pred, dI_pred, _ = dy
 
         dS = torch.autograd.grad(S, t, torch.ones_like(S), create_graph=True)[0]
         dI = torch.autograd.grad(I, t, torch.ones_like(I), create_graph=True)[0]
