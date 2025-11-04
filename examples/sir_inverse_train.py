@@ -9,7 +9,9 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
 
+from pinn.core.core import LOSS_KEY
 from pinn.lightning import PINNModule, SMMAStopping
+from pinn.lightning.callbacks import FormattedProgressBar, Metric
 from pinn.problems import SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem, SIRInvProperties
 from pinn.problems.sir_inverse import SIRInvScaler
 
@@ -77,11 +79,19 @@ def train_sir_inverse(
         ),
     ]
 
+    def format(key: str, value: Metric) -> Metric:
+        if key == LOSS_KEY:
+            return f"{value:.2e}"
+        elif key == "beta":
+            return f"{value:.4f}"
+
+        return value
+
     callbacks = [
         ModelCheckpoint(
             dirpath=temp_dir,
             filename="{epoch:02d}",
-            monitor=f"{hp.log_prefix}/total",
+            monitor=LOSS_KEY,
             mode="min",
             save_top_k=1,
             save_last=True,
@@ -89,14 +99,18 @@ def train_sir_inverse(
         LearningRateMonitor(
             logging_interval="epoch",
         ),
+        FormattedProgressBar(
+            refresh_rate=10,
+            format=format,
+        ),
     ]
 
     if hp.smma_stopping:
         callbacks.append(
             SMMAStopping(
                 config=hp.smma_stopping,
-                loss_key=f"{hp.log_prefix}/total",
-                log_key=f"{hp.log_prefix}/total_smma",
+                loss_key=LOSS_KEY,
+                log_key="loss/smma",
             ),
         )
 

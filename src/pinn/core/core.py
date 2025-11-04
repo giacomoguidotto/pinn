@@ -32,6 +32,20 @@ def get_activation(name: Activations) -> nn.Module:
         "identity": nn.Identity(),
     }[name]
 
+class LogFn(Protocol):
+    """
+    A function that logs a value to a dictionary.
+
+    Args:
+        key: The key to log the value under.
+        value: The value to log.
+        progress_bar: Whether the value should be logged to the progress bar.
+    """
+
+    def __call__(self, key: str, value: Tensor, progress_bar: bool = False) -> None: ...
+
+
+LOSS_KEY: str = "loss"
 
 @dataclass
 class Loss:
@@ -151,7 +165,12 @@ class Operator(Protocol):
     Returns dict of name->Loss residuals evaluated at provided batch.
     """
 
-    def residuals(self, collocations: Tensor) -> dict[str, Loss]: ...
+    def residuals(
+        self,
+        collocations: Tensor,
+        criterion: nn.Module,
+        log: LogFn | None = None,
+    ) -> Tensor: ...
 
 
 class Constraint(Protocol):
@@ -160,9 +179,12 @@ class Constraint(Protocol):
     Returns dict of name->Loss.
     """
 
-    def set_loss_fn(self, loss_fn: nn.Module) -> None: ...
-    def loss(self, batch: Batch) -> dict[str, Loss]: ...
-
+    def loss(
+        self,
+        batch: Batch,
+        criterion: nn.Module,
+        log: LogFn | None = None,
+    ) -> Tensor: ...
 
 class Problem(nn.Module):
     """
@@ -173,35 +195,24 @@ class Problem(nn.Module):
         self,
         operator: Operator,  # TODO: why not more than one?
         constraints: list[Constraint],
-        loss_fn: nn.Module,
+        criterion: nn.Module,
     ):
         super().__init__()
-        self.loss_fn = loss_fn
         self.operator = operator
         self.constraints = constraints
-        for c in self.constraints:
-            c.set_loss_fn(loss_fn)
+        self.criterion = criterion
 
-        self.logs: dict[str, tuple[Tensor, bool]] = {}
-
-    def total_loss(self, batch: Batch) -> Tensor:
+    def total_loss(self, batch: Batch, log: LogFn | None = None) -> Tensor:
         _, colloc = batch
 
         total = torch.zeros((), dtype=torch.float32, device=colloc.device)
 
-        op = self.operator
-        for k, v in op.residuals(colloc).items():
-            v.value = self.loss_fn(v.value, torch.zeros_like(v.value))
-            total = total + v.weight * v.value
-            self.logs[f"loss/{k}"] = (v.value, False)
+        total = total + self.operator.residuals(colloc, self.criterion, log)
 
         for c in self.constraints:
-            for k, v in c.loss(batch).items():
-                total = total + v.weight * v.value
-                self.logs[f"loss/{k}"] = (v.value, False)
+            total = total + c.loss(batch, self.criterion, log)
 
-        self.logs["total"] = (total, True)
+        if log is not None:
+            log(LOSS_KEY, total, progress_bar=True)
+
         return total
-
-    def get_logs(self) -> dict[str, tuple[Tensor, bool]]:
-        return self.logs

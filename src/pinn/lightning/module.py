@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, override
 
 import lightning.pytorch as pl
@@ -9,15 +9,16 @@ import torch
 from torch import Tensor
 
 from pinn.core import Batch, Problem
+from pinn.core.core import LOSS_KEY
 
 
 @dataclass
 class SchedulerConfig:
-    mode: Literal["min", "max"] = "min"
-    factor: float = 0.5
-    patience: int = 50
-    threshold: float = 1e-3
-    min_lr: float = 1e-6
+    mode: Literal["min", "max"]
+    factor: float
+    patience: int
+    threshold: float
+    min_lr: float
 
 
 @dataclass
@@ -41,10 +42,9 @@ class PINNHyperparameters:
     collocations: int
     lr: float
     gradient_clip_val: float
-    scheduler: SchedulerConfig | None = field(default_factory=SchedulerConfig)
+    scheduler: SchedulerConfig | None = None
     early_stopping: EarlyStoppingConfig | None = None
     smma_stopping: SMMAStoppingConfig | None = None
-    log_prefix: str = "train"
 
 
 class PINNModule(pl.LightningModule):
@@ -69,19 +69,17 @@ class PINNModule(pl.LightningModule):
 
     @override
     def training_step(self, batch: Batch, batch_idx: int) -> Tensor:
-        total = self.problem.total_loss(batch)
-
-        prefix = self.hp.log_prefix
-        logs = self.problem.get_logs()
-        for k, (v, prog_bar) in logs.items():
+        def log(key: str, value: Tensor, progress_bar: bool = False) -> None:
             self.log(
-                f"{prefix}/{k}",
-                v,
+                key,
+                value,
                 on_step=False,
                 on_epoch=True,
-                prog_bar=prog_bar,
+                prog_bar=progress_bar,
                 batch_size=self.hp.batch_size,
             )
+
+        total = self.problem.total_loss(batch, log)
 
         return total
 
@@ -99,11 +97,13 @@ class PINNModule(pl.LightningModule):
             threshold=self.scheduler.threshold,
             min_lr=self.scheduler.min_lr,
         )
+
         return {
             "optimizer": opt,
             "lr_scheduler": {
+                "name": "lr",
                 "scheduler": sch,
-                "monitor": f"{self.hp.log_prefix}/total",
+                "monitor": LOSS_KEY,
                 "interval": "epoch",
                 "frequency": 1,
             },

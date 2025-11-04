@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import override
+from collections.abc import Callable
+from typing import Any, TypeAlias, override
 
 from lightning.pytorch import LightningModule, Trainer
-from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.callbacks import Callback, TQDMProgressBar
 
 from pinn.lightning.module import SMMAStoppingConfig
 
@@ -56,3 +57,45 @@ class SMMAStopping(Callback):
                 f"\nStopping training: SMMA improvement over {self.config.lookback} "
                 f"epochs ({improvement_ratio:.2%}) below threshold ({self.config.threshold:.2%})"
             )
+
+Metric: TypeAlias = int | str | float | dict[str, float]
+FormatFn: TypeAlias = Callable[[str, Metric], Metric]
+"""
+A function that formats a metric for display in the progress bar.
+
+Args:
+    key: The key of the metric.
+    value: The value of the metric.
+
+Returns:
+    The formatted metric.
+"""
+
+
+class FormattedProgressBar(TQDMProgressBar):
+    """Custom progress bar for training that formats metrics for better readability.
+
+    This class extends the TQDMProgressBar to provide custom formatting for
+    training metrics, particularly for the total loss and beta values.
+    """
+
+    def __init__(self, *args: Any, format: FormatFn, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.format = format
+
+    @override
+    def get_metrics(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Format metrics for display in the progress bar.
+
+        Returns:
+            Dictionary of formatted metrics with:
+            - Total loss in scientific notation
+            - Beta value with 4 decimal places
+            - Other metrics as provided by the parent class
+        """
+        items = super().get_metrics(*args, **kwargs)
+        items.pop("v_num", None)
+        for key, value in items.items():
+            items[key] = self.format(key, value)
+
+        return items
