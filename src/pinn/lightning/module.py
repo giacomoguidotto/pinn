@@ -8,8 +8,7 @@ from lightning.pytorch.utilities.types import OptimizerLRScheduler
 import torch
 from torch import Tensor
 
-from pinn.core import Batch, Problem
-from pinn.core.core import LOSS_KEY
+from pinn.core import LOSS_KEY, Batch, Problem
 
 
 @dataclass

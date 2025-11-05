@@ -9,11 +9,11 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
 
-from pinn.core.core import LOSS_KEY
+from pinn.core import LOSS_KEY
 from pinn.lightning import PINNModule, SMMAStopping
 from pinn.lightning.callbacks import FormattedProgressBar, Metric
 from pinn.problems import SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem, SIRInvProperties
-from pinn.problems.sir_inverse import SIRInvScaler
+from pinn.problems.sir_inverse import BETA_KEY, SIRInvScaler
 
 
 def create_temp_dir() -> Path:
@@ -43,8 +43,8 @@ def train_sir_inverse(
     props: SIRInvProperties, hp: SIRInvHyperparameters, config: SIRInvTrainConfig
 ) -> None:
     # prepare
-    clean_dir(config.tensorboard_dir)
-    clean_dir(config.csv_dir)
+    clean_dir(config.tensorboard_dir / config.name / config.version)
+    clean_dir(config.csv_dir / config.name / config.version)
     temp_dir = create_temp_dir()
 
     scaler = SIRInvScaler(props)
@@ -82,8 +82,8 @@ def train_sir_inverse(
     def format(key: str, value: Metric) -> Metric:
         if key == LOSS_KEY:
             return f"{value:.2e}"
-        elif key == "beta":
-            return f"{value:.4f}"
+        elif key == BETA_KEY:
+            return f"{value:.5f} -> {props.beta:.5f}"
 
         return value
 
@@ -133,10 +133,10 @@ def train_sir_inverse(
 
 
 if __name__ == "__main__":
+    saved_models_dir = Path("./data/versions")
     log_dir = Path("./data/logs")
     tensorboard_dir = log_dir / "tensorboard"
     csv_dir = log_dir / "csv"
-    saved_models_dir = Path("./data/versions")
 
     props = SIRInvProperties()
     hp = SIRInvHyperparameters()

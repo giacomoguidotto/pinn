@@ -26,8 +26,9 @@ from pinn.core.dataset import Scaler
 from pinn.lightning.module import PINNHyperparameters, SchedulerConfig
 from pinn.problems.ode import Domain1D, ODEDataset, ODEProperties
 
-SIRCallable: TypeAlias = Callable[[Tensor, Tensor, float, float, float], Tensor]
+BETA_KEY = "params/beta"
 
+SIRCallable: TypeAlias = Callable[[Tensor, Tensor, float, float, float], Tensor]
 
 def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
     S, I, _ = y.unbind()
@@ -97,10 +98,10 @@ class SIRInvProperties(ODEProperties):
 class SIROperator(Operator):
     def __init__(
         self,
-        props: SIRInvProperties,
         field_S: Field,
         field_I: Field,
         beta: Parameter,
+        props: SIRInvProperties,
         scaler: SIRInvScaler,
         weight: float,
     ):
@@ -136,8 +137,8 @@ class SIROperator(Operator):
         I_loss: Tensor = criterion(I_res, torch.zeros_like(I_res))
 
         if log is not None:
-            log("res/S", S_loss)
-            log("res/I", I_loss)
+            log("loss/res/S", S_loss)
+            log("loss/res/I", I_loss)
 
         return self.weight * (S_loss + I_loss)
 
@@ -162,7 +163,7 @@ class DataConstraint(Constraint):
         data_loss: Tensor = criterion(I_pred, I_data)
 
         if log is not None:
-            log("data/I", data_loss)
+            log("loss/data/I", data_loss)
 
         return self.weight * data_loss
 
@@ -170,10 +171,10 @@ class DataConstraint(Constraint):
 class ICConstraint(Constraint):
     def __init__(
         self,
-        props: SIRInvProperties,
         field_S: Field,
         field_I: Field,
         weight: float,
+        props: SIRInvProperties,
         scaler: SIRInvScaler,
     ):
         Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
@@ -200,8 +201,8 @@ class ICConstraint(Constraint):
         I0_loss: Tensor = criterion(I0_pred, I0)
 
         if log is not None:
-            log("ic/S0", S0_loss)
-            log("ic/I0", I0_loss)
+            log("loss/ic/S0", S0_loss)
+            log("loss/ic/I0", I0_loss)
 
         return self.weight * (S0_loss + I0_loss)
 
@@ -229,7 +230,7 @@ class BetaSmoothness(Constraint):
 
         loss: Tensor = criterion(db)
         if log is not None:
-            log("reg/beta_smooth", loss)
+            log("loss/reg/beta_smooth", loss)
 
         return self.weight * loss
 
@@ -264,20 +265,20 @@ class SIRInvProblem(Problem):
         )
 
         operator = SIROperator(
-            props=props,
             field_S=field_S,
             field_I=field_I,
             weight=hp.pde_weight,
-            beta=beta,
+            props=props,
             scaler=scaler,
+            beta=beta,
         )
 
         constraints: list[Constraint] = [
             ICConstraint(
-                props=props,
                 field_S=field_S,
                 field_I=field_I,
                 weight=hp.ic_weight,
+                props=props,
                 scaler=scaler,
             ),
             DataConstraint(
@@ -308,7 +309,7 @@ class SIRInvProblem(Problem):
     @override
     def total_loss(self, batch: Batch, log: LogFn | None = None) -> Tensor:
         if log is not None:
-            log("beta", self.beta.forward(), progress_bar=True)
+            log(BETA_KEY, self.beta.forward(), progress_bar=True)
 
         return super().total_loss(batch, log)
 
@@ -380,7 +381,7 @@ class SIRInvDataModule(pl.LightningDataModule):
 
     @override
     def train_dataloader(self) -> DataLoader[Batch]:
-        mixed_dataset = PINNDataset(
+        pinn_dataset = PINNDataset(
             data_ds=self.dataset,
             coll_ds=self.collocationset,
             batch_size=self.hp.batch_size,
@@ -389,7 +390,8 @@ class SIRInvDataModule(pl.LightningDataModule):
         )
 
         return DataLoader[Batch](
-            mixed_dataset,
+            pinn_dataset,
             batch_size=None,  # handled internally
-            num_workers=0,
+            num_workers=7,
+            persistent_workers=True,
         )
