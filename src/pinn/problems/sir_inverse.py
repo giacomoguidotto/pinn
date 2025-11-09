@@ -11,17 +11,8 @@ from torch import Tensor
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-from pinn.core import (
-    Activations,
-    Batch,
-    Constraint,
-    Field,
-    Operator,
-    Parameter,
-    PINNDataset,
-    Problem,
-)
-from pinn.core.core import LogFn
+from pinn.core import Batch, Constraint, Field, Operator, Parameter, PINNDataset, Problem
+from pinn.core.core import LogFn, MLPConfig, ScalarConfig
 from pinn.core.dataset import Scaler
 from pinn.lightning.module import PINNHyperparameters, SchedulerConfig
 from pinn.problems.ode import Domain1D, ODEDataset, ODEProperties
@@ -29,6 +20,7 @@ from pinn.problems.ode import Domain1D, ODEDataset, ODEProperties
 BETA_KEY = "params/beta"
 
 SIRCallable: TypeAlias = Callable[[Tensor, Tensor, float, float, float], Tensor]
+
 
 def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
     S, I, _ = y.unbind()
@@ -42,33 +34,50 @@ def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
 @dataclass
 class SIRInvHyperparameters(PINNHyperparameters):
     max_epochs: int = 2000
-    batch_size: int = 512
-    data_ratio: int | float = 4
-    collocations: int = 4096
-    lr: float = 1e-3
+    batch_size: int = 100
+    data_ratio: int | float = 2
+    collocations: int = 6000
+    lr: float = 5e-4
     gradient_clip_val: float = 0.1
     scheduler: SchedulerConfig | None = field(
         default_factory=lambda: SchedulerConfig(
             mode="min",
             factor=0.5,
-            patience=65,
+            patience=55,
             threshold=5e-3,
             min_lr=1e-6,
         )
     )
-    # fields networks
-    hidden_layers: list[int] = field(default_factory=lambda: [64, 128, 128, 64])
-    activation: Activations = "tanh"
-    output_activation: Activations = "softplus"
-    # beta param network
-    beta_hidden: list[int] = field(default_factory=lambda: [64, 64])
-    beta_activation: Activations = "tanh"
-    beta_output_activation: Activations = "softplus"
+    fields_config: MLPConfig = field(
+        default_factory=lambda: MLPConfig(
+            in_dim=1,
+            out_dim=1,
+            hidden_layers=[64, 128, 128, 64],
+            activation="tanh",
+            output_activation="softplus",
+        )
+    )
+    # beta_config: MLPConfig = field(
+    #     default_factory=lambda: MLPConfig(
+    #         in_dim=1,
+    #         out_dim=1,
+    #         hidden_layers=[64, 64],
+    #         activation="tanh",
+    #         output_activation="softplus",
+    #         name=BETA_KEY,
+    #     )
+    # )
+    beta_config: ScalarConfig = field(
+        default_factory=lambda: ScalarConfig(
+            init_value=0.5,
+            name=BETA_KEY,
+        )
+    )
     # losses
-    pde_weight: float = 10.0
-    ic_weight: float = 5.0
-    data_weight: float = 1.0
-    reg_beta_smooth_weight: float = 0.0
+    pde_weight: float = 100.0
+    ic_weight: float = 1
+    data_weight: float = 1
+    beta_smoothness_weight: float = 0.0
 
 
 @dataclass
@@ -95,7 +104,7 @@ class SIRInvProperties(ODEProperties):
         self.Y0 = [S0, self.I0, R0]
 
 
-class SIROperator(Operator):
+class SIRInvOperator(Operator):
     def __init__(
         self,
         field_S: Field,
@@ -115,32 +124,34 @@ class SIROperator(Operator):
         self.weight = weight
 
     @override
-    def residuals(self, t: Tensor, criterion: nn.Module, log: LogFn | None = None) -> Tensor:
-        t = t.requires_grad_(True)
-        S = self.S(t)
-        I = self.I(t)
+    def residuals(self, t_coll: Tensor, criterion: nn.Module, log: LogFn | None = None) -> Tensor:
+        t_coll = t_coll.requires_grad_(True)
+        S = self.S(t_coll)
+        I = self.I(t_coll)
         R = self.N - S - I
         y = torch.stack([S, I, R])
 
-        beta = self.beta(t)
+        beta = self.beta(t_coll)
 
-        dy = self.SIR(t, y, self.delta, beta, self.N)
+        dy = self.SIR(t_coll, y, self.delta, beta, self.N)
         dS_pred, dI_pred, _ = dy
 
-        dS = torch.autograd.grad(S, t, torch.ones_like(S), create_graph=True)[0]
-        dI = torch.autograd.grad(I, t, torch.ones_like(I), create_graph=True)[0]
+        dS = torch.autograd.grad(S, t_coll, torch.ones_like(S), create_graph=True)[0]
+        dI = torch.autograd.grad(I, t_coll, torch.ones_like(I), create_graph=True)[0]
 
         S_res: Tensor = dS - dS_pred
         I_res: Tensor = dI - dI_pred
 
         S_loss: Tensor = criterion(S_res, torch.zeros_like(S_res))
         I_loss: Tensor = criterion(I_res, torch.zeros_like(I_res))
+        loss = self.weight * (S_loss + I_loss)
 
         if log is not None:
+            log("loss/res", loss)
             log("loss/res/S", S_loss)
             log("loss/res/I", I_loss)
 
-        return self.weight * (S_loss + I_loss)
+        return loss
 
 
 class DataConstraint(Constraint):
@@ -161,11 +172,12 @@ class DataConstraint(Constraint):
         I_pred = self.I(t_data)
 
         data_loss: Tensor = criterion(I_pred, I_data)
-
+        loss = self.weight * data_loss
         if log is not None:
+            log("loss/data", loss)
             log("loss/data/I", data_loss)
 
-        return self.weight * data_loss
+        return loss
 
 
 class ICConstraint(Constraint):
@@ -200,11 +212,14 @@ class ICConstraint(Constraint):
         S0_loss: Tensor = criterion(S0_pred, S0)
         I0_loss: Tensor = criterion(I0_pred, I0)
 
+        loss = self.weight * (S0_loss + I0_loss)
+
         if log is not None:
+            log("loss/ic", loss)
             log("loss/ic/S0", S0_loss)
             log("loss/ic/I0", I0_loss)
 
-        return self.weight * (S0_loss + I0_loss)
+        return loss
 
 
 class BetaSmoothness(Constraint):
@@ -242,29 +257,11 @@ class SIRInvProblem(Problem):
         hp: SIRInvHyperparameters,
         scaler: SIRInvScaler,
     ) -> None:
-        in_dim, out_dim = 1, 1
-        field_S = Field(
-            in_dim, out_dim, hp.hidden_layers, hp.activation, hp.output_activation, name="S"
-        )
-        field_I = Field(
-            in_dim, out_dim, hp.hidden_layers, hp.activation, hp.output_activation, name="I"
-        )
+        field_S = Field(config=hp.fields_config)
+        field_I = Field(config=hp.fields_config)
+        beta = Parameter(config=hp.beta_config)
 
-        # beta = Parameter(
-        #     mode="mlp",
-        #     in_dim=in_dim,
-        #     hidden_layers=hp.beta_hidden,
-        #     activation=hp.beta_activation,
-        #     output_activation=hp.beta_output_activation,
-        #     name="beta",
-        # )
-        beta = Parameter(
-            mode="scalar",
-            init_value=0.5,
-            name="beta",
-        )
-
-        operator = SIROperator(
+        operator = SIRInvOperator(
             field_S=field_S,
             field_I=field_I,
             weight=hp.pde_weight,
@@ -288,7 +285,7 @@ class SIRInvProblem(Problem):
             ),
             # BetaSmoothness(
             #     beta=beta,
-            #     weight=hp.reg_beta_smooth_weight,
+            #     weight=hp.beta_smoothness_weight,
             # ),
         ]
 
@@ -298,20 +295,10 @@ class SIRInvProblem(Problem):
             operator=operator,
             constraints=constraints,
             criterion=criterion,
+            fields=[field_S, field_I],
+            parameters=[beta],
         )
 
-        # assign modules after __init__ to register parameters
-        self.field_S = field_S
-        self.field_I = field_I
-        self.beta = beta
-
-
-    @override
-    def total_loss(self, batch: Batch, log: LogFn | None = None) -> Tensor:
-        if log is not None:
-            log(BETA_KEY, self.beta.forward(), progress_bar=True)
-
-        return super().total_loss(batch, log)
 
 class SIRInvDataset(ODEDataset):
     def __init__(self, props: SIRInvProperties):
@@ -321,7 +308,7 @@ class SIRInvDataset(ODEDataset):
         I = self.data[:, 1].clamp_min(0.0)
 
         # noising I
-        noise_level = 2e4  # TODO: make this a parameter
+        noise_level = 1  # TODO: make this a parameter
         I_obs = torch.poisson(I / noise_level) * noise_level
         self.obs = torch.stack((self.t, I_obs), dim=1).unsqueeze(-1)
 

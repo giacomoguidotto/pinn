@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol, override
+from typing import Literal, Protocol, cast, override
 
 import torch
 from torch import Tensor
@@ -32,29 +32,38 @@ def get_activation(name: Activations) -> nn.Module:
         "identity": nn.Identity(),
     }[name]
 
+
 class LogFn(Protocol):
     """
     A function that logs a value to a dictionary.
 
     Args:
-        key: The key to log the value under.
+        name: The name to log the value under.
         value: The value to log.
         progress_bar: Whether the value should be logged to the progress bar.
     """
 
-    def __call__(self, key: str, value: Tensor, progress_bar: bool = False) -> None: ...
+    def __call__(self, name: str, value: Tensor, progress_bar: bool = False) -> None: ...
 
 
 LOSS_KEY: str = "loss"
 
-@dataclass
-class Loss:
-    """
-    A loss value with a weight. Used to aggregate losses in a weighted sum.
-    """
 
-    value: Tensor
-    weight: float
+@dataclass
+class MLPConfig:
+    in_dim: int
+    out_dim: int
+    hidden_layers: list[int]
+    activation: Activations
+    output_activation: Activations | None = None
+    encode: Callable[[Tensor], Tensor] | None = None
+    name: str = "u"
+
+
+@dataclass
+class ScalarConfig:
+    init_value: float = 0.1
+    name: str = "p"
 
 
 class Field(nn.Module):
@@ -65,19 +74,13 @@ class Field(nn.Module):
 
     def __init__(
         self,
-        in_dim: int,
-        out_dim: int,
-        hidden_layers: list[int],
-        activation: Activations,
-        output_activation: Activations | None = None,
-        encode: Callable[[Tensor], Tensor] | None = None,
-        name: str = "u",
+        config: MLPConfig,
     ):
         super().__init__()
-        self.name = name
-        self.encode = encode
-        dims = [in_dim] + hidden_layers + [out_dim]
-        act = get_activation(activation)
+        self._name = config.name
+        self.encode = config.encode
+        dims = [config.in_dim] + config.hidden_layers + [config.out_dim]
+        act = get_activation(config.activation)
 
         layers: list[nn.Module] = []
         for i in range(len(dims) - 1):
@@ -85,8 +88,8 @@ class Field(nn.Module):
             if i < len(dims) - 2:
                 layers.append(act)
 
-        if output_activation is not None:
-            out_act = get_activation(output_activation)
+        if config.output_activation is not None:
+            out_act = get_activation(config.output_activation)
             layers.append(out_act)
 
         self.net = nn.Sequential(*layers)
@@ -104,6 +107,10 @@ class Field(nn.Module):
             x = self.encode(x)
         return self.net(x)  # type: ignore
 
+    @property
+    def name(self) -> str:
+        return self._name
+
 
 class Parameter(nn.Module):
     """
@@ -113,23 +120,19 @@ class Parameter(nn.Module):
 
     def __init__(
         self,
-        mode: Literal["scalar", "mlp"],
-        init_value: float = 0.1,
-        in_dim: int = 1,
-        hidden_layers: list[int] | None = None,
-        activation: Activations | None = None,
-        output_activation: Activations | None = None,
-        name: str = "param",
+        config: ScalarConfig | MLPConfig,
     ):
         super().__init__()
-        self.name = name
-        self.mode = mode
-        if mode == "scalar":
-            self.value = nn.Parameter(torch.tensor(float(init_value), dtype=torch.float32))
-        else:  # mode == "mlp"
-            hl = hidden_layers or [32, 32]
-            dims = [in_dim] + hl + [1]
-            act = get_activation(activation or "tanh")
+        self._name = config.name
+
+        if isinstance(config, ScalarConfig):
+            self.mode = "scalar"
+            self.value = nn.Parameter(torch.tensor(float(config.init_value), dtype=torch.float32))
+
+        else:  # isinstance(config, MLPConfig)
+            self.mode = "mlp"
+            dims = [config.in_dim] + config.hidden_layers + [config.out_dim]
+            act = get_activation(config.activation)
 
             layers: list[nn.Module] = []
             for i in range(len(dims) - 1):
@@ -137,8 +140,8 @@ class Parameter(nn.Module):
                 if i < len(dims) - 2:
                     layers.append(act)
 
-            if output_activation is not None:
-                out_act = get_activation(output_activation)
+            if config.output_activation is not None:
+                out_act = get_activation(config.output_activation)
                 layers.append(out_act)
 
             self.net = nn.Sequential(*layers)
@@ -158,16 +161,21 @@ class Parameter(nn.Module):
             assert x is not None, "Function-valued parameter requires input"
             return self.net(x)  # type: ignore
 
+    @property
+    def name(self) -> str:
+        return self._name
+
 
 class Operator(Protocol):
     """
+
     Builds residuals given fields and parameters.
     Returns dict of name->Loss residuals evaluated at provided batch.
     """
 
     def residuals(
         self,
-        collocations: Tensor,
+        t_coll: Tensor,
         criterion: nn.Module,
         log: LogFn | None = None,
     ) -> Tensor: ...
@@ -186,6 +194,7 @@ class Constraint(Protocol):
         log: LogFn | None = None,
     ) -> Tensor: ...
 
+
 class Problem(nn.Module):
     """
     Aggregates operator residuals and constraints into total loss.
@@ -193,26 +202,32 @@ class Problem(nn.Module):
 
     def __init__(
         self,
-        operator: Operator,  # TODO: why not more than one?
+        operator: Operator,
         constraints: list[Constraint],
         criterion: nn.Module,
+        fields: list[Field],
+        parameters: list[Parameter],
     ):
         super().__init__()
         self.operator = operator
         self.constraints = constraints
         self.criterion = criterion
 
+        self.fields = nn.ModuleList(fields)
+        self.params = nn.ModuleList(parameters)
+
     def total_loss(self, batch: Batch, log: LogFn | None = None) -> Tensor:
-        _, colloc = batch
+        _, t_coll = batch
 
-        total = torch.zeros((), dtype=torch.float32, device=colloc.device)
-
-        total = total + self.operator.residuals(colloc, self.criterion, log)
+        total = self.operator.residuals(t_coll, self.criterion, log)
 
         for c in self.constraints:
             total = total + c.loss(batch, self.criterion, log)
 
         if log is not None:
+            for p in self.params:
+                param = cast(Parameter, p)
+                log(param.name, param.forward(), progress_bar=True)
             log(LOSS_KEY, total, progress_bar=True)
 
         return total

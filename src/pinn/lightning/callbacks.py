@@ -8,9 +8,11 @@ from lightning.pytorch.callbacks import Callback, TQDMProgressBar
 
 from pinn.lightning.module import SMMAStoppingConfig
 
+SMMA_KEY = "loss/smma"
+
 
 class SMMAStopping(Callback):
-    def __init__(self, config: SMMAStoppingConfig, loss_key: str, log_key: str):
+    def __init__(self, config: SMMAStoppingConfig, loss_key: str, log_key: str = SMMA_KEY):
         super().__init__()
         self.config = config
         self.loss_key = loss_key
@@ -57,6 +59,7 @@ class SMMAStopping(Callback):
                 f"\nStopping training: SMMA improvement over {self.config.lookback} "
                 f"epochs ({improvement_ratio:.2%}) below threshold ({self.config.threshold:.2%})"
             )
+
 
 Metric: TypeAlias = int | str | float | dict[str, float]
 FormatFn: TypeAlias = Callable[[str, Metric], Metric]

@@ -110,7 +110,6 @@ def train_sir_inverse(
             SMMAStopping(
                 config=hp.smma_stopping,
                 loss_key=LOSS_KEY,
-                log_key="loss/smma",
             ),
         )
 

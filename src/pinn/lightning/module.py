@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, override
+from typing import Literal, cast, override
 
 import lightning.pytorch as pl
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 import torch
 from torch import Tensor
 
-from pinn.core import LOSS_KEY, Batch, Problem
+from pinn.core import LOSS_KEY, Batch, LogFn, Problem
 
 
 @dataclass
@@ -63,22 +63,22 @@ class PINNModule(pl.LightningModule):
         self.problem = problem
         self.hp = hp
         self.scheduler = hp.scheduler
-        self.early_stopping = hp.early_stopping
-        self.smma_stopping = hp.smma_stopping
 
-    @override
-    def training_step(self, batch: Batch, batch_idx: int) -> Tensor:
-        def log(key: str, value: Tensor, progress_bar: bool = False) -> None:
+        def _log(key: str, value: Tensor, progress_bar: bool = False) -> None:
             self.log(
                 key,
                 value,
                 on_step=False,
                 on_epoch=True,
                 prog_bar=progress_bar,
-                batch_size=self.hp.batch_size,
+                batch_size=hp.batch_size,
             )
 
-        total = self.problem.total_loss(batch, log)
+        self._log = cast(LogFn, _log)
+
+    @override
+    def training_step(self, batch: Batch, batch_idx: int) -> Tensor:
+        total = self.problem.total_loss(batch, self._log)
 
         return total
 
