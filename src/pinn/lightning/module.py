@@ -8,7 +8,7 @@ from lightning.pytorch.utilities.types import OptimizerLRScheduler
 import torch
 from torch import Tensor
 
-from pinn.core import LOSS_KEY, Batch, LogFn, Problem
+from pinn.core import LOSS_KEY, DataBatch, LogFn, PINNBatch, Problem
 
 
 @dataclass
@@ -77,10 +77,17 @@ class PINNModule(pl.LightningModule):
         self._log = cast(LogFn, _log)
 
     @override
-    def training_step(self, batch: Batch, batch_idx: int) -> Tensor:
+    def training_step(self, batch: PINNBatch, batch_idx: int) -> Tensor:
         total = self.problem.total_loss(batch, self._log)
 
         return total
+
+    @override
+    def predict_step(self, batch: DataBatch, batch_idx: int) -> dict[str, Tensor]:
+        x_data, y_data = batch
+        y_pred = self.problem.predict(x_data)
+
+        return {"x_data": x_data, "y_data": y_data, **y_pred}
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:

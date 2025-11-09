@@ -6,23 +6,30 @@ from pinn.core.core import (
     Constraint,
     Field,
     LogFn,
+    MLPConfig,
     Operator,
     Parameter,
     Problem,
+    ScalarConfig,
     get_activation,
 )
-from pinn.core.dataset import Batch, PINNDataset
+from pinn.core.dataset import DataBatch, PINNBatch, PINNDataModule, PINNDataset, Transformer
 
 __all__ = [
     "LOSS_KEY",
     "Activations",
-    "Batch",
     "Constraint",
+    "DataBatch",
     "Field",
     "LogFn",
+    "MLPConfig",
     "Operator",
+    "PINNBatch",
+    "PINNDataModule",
     "PINNDataset",
     "Parameter",
     "Problem",
+    "ScalarConfig",
+    "Transformer",
     "get_activation",
 ]

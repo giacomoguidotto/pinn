@@ -2,19 +2,30 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import TypeAlias, cast, override
+from dataclasses import dataclass, field, replace
+from typing import TypeAlias, TypeVar, override
 
-import lightning.pytorch as pl
 import torch
 from torch import Tensor
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 
-from pinn.core import Batch, Constraint, Field, Operator, Parameter, PINNDataset, Problem
-from pinn.core.core import LogFn, MLPConfig, ScalarConfig
-from pinn.core.dataset import Scaler
-from pinn.lightning.module import PINNHyperparameters, SchedulerConfig
+from pinn.core import (
+    Constraint,
+    DataBatch,
+    Field,
+    LogFn,
+    MLPConfig,
+    Operator,
+    Parameter,
+    PINNBatch,
+    PINNDataModule,
+    PINNDataset,
+    Problem,
+    ScalarConfig,
+    Transformer,
+)
+from pinn.lightning import PINNHyperparameters, SchedulerConfig
 from pinn.problems.ode import Domain1D, ODEDataset, ODEProperties
 
 BETA_KEY = "params/beta"
@@ -33,7 +44,7 @@ def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
 
 @dataclass
 class SIRInvHyperparameters(PINNHyperparameters):
-    max_epochs: int = 2000
+    max_epochs: int = 1000
     batch_size: int = 100
     data_ratio: int | float = 2
     collocations: int = 6000
@@ -104,6 +115,21 @@ class SIRInvProperties(ODEProperties):
         self.Y0 = [S0, self.I0, R0]
 
 
+class SIRInvTransformer(Transformer):
+    T = TypeVar("T", Tensor, float)
+
+    def __init__(self, props: SIRInvProperties):
+        self.props = props
+
+    @override
+    def transform_values(self, data: T) -> T:
+        return data / self.props.N
+
+    @override
+    def inverse_transform_values(self, data: T) -> T:
+        return data * self.props.N
+
+
 class SIRInvOperator(Operator):
     def __init__(
         self,
@@ -111,12 +137,11 @@ class SIRInvOperator(Operator):
         field_I: Field,
         beta: Parameter,
         props: SIRInvProperties,
-        scaler: SIRInvScaler,
         weight: float,
     ):
         self.SIR = props.ode
         self.delta = props.delta
-        self.N = cast(float, scaler.scale_data(props.N))  # type: ignore
+        self.N = props.N
 
         self.S = field_S
         self.I = field_I
@@ -124,16 +149,24 @@ class SIRInvOperator(Operator):
         self.weight = weight
 
     @override
-    def residuals(self, t_coll: Tensor, criterion: nn.Module, log: LogFn | None = None) -> Tensor:
+    def residuals(
+        self,
+        t_coll: Tensor,
+        criterion: nn.Module,
+        transformer: Transformer,
+        log: LogFn | None = None,
+    ) -> Tensor:
         t_coll = t_coll.requires_grad_(True)
+        N = transformer.transform_values(self.N)
+
         S = self.S(t_coll)
         I = self.I(t_coll)
-        R = self.N - S - I
+        R = N - S - I
         y = torch.stack([S, I, R])
 
         beta = self.beta(t_coll)
 
-        dy = self.SIR(t_coll, y, self.delta, beta, self.N)
+        dy = self.SIR(t_coll, y, self.delta, beta, N)
         dS_pred, dI_pred, _ = dy
 
         dS = torch.autograd.grad(S, t_coll, torch.ones_like(S), create_graph=True)[0]
@@ -157,16 +190,20 @@ class SIRInvOperator(Operator):
 class DataConstraint(Constraint):
     def __init__(
         self,
-        field_S: Field,
         field_I: Field,
         weight: float,
     ):
-        self.S = field_S
         self.I = field_I
         self.weight = weight
 
     @override
-    def loss(self, batch: Batch, criterion: nn.Module, log: LogFn | None = None) -> Tensor:
+    def loss(
+        self,
+        batch: PINNBatch,
+        criterion: nn.Module,
+        transformer: Transformer,
+        log: LogFn | None = None,
+    ) -> Tensor:
         (t_data, I_data), _ = batch
 
         I_pred = self.I(t_data)
@@ -187,24 +224,26 @@ class ICConstraint(Constraint):
         field_I: Field,
         weight: float,
         props: SIRInvProperties,
-        scaler: SIRInvScaler,
     ):
-        Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
-        t0 = torch.tensor(props.domain.t0, dtype=torch.float32).reshape(1, 1)
-
-        self.Y0 = scaler.scale_data(Y0)
-        self.t0 = t0
+        self.Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
+        self.t0 = torch.tensor(props.domain.t0, dtype=torch.float32).reshape(1, 1)
 
         self.S = field_S
         self.I = field_I
         self.weight = weight
 
     @override
-    def loss(self, batch: Batch, criterion: nn.Module, log: LogFn | None = None) -> Tensor:
+    def loss(
+        self,
+        batch: PINNBatch,
+        criterion: nn.Module,
+        transformer: Transformer,
+        log: LogFn | None = None,
+    ) -> Tensor:
         device = batch[1].device
 
-        t0 = self.t0.to(device)
-        S0, I0, _ = self.Y0.to(device)
+        t0 = transformer.transform_domain(self.t0.to(device))
+        S0, I0, _ = transformer.transform_values(self.Y0.to(device))
 
         S0_pred = self.S(t0)
         I0_pred = self.I(t0)
@@ -236,7 +275,13 @@ class BetaSmoothness(Constraint):
         self.weight = weight
 
     @override
-    def loss(self, batch: Batch, criterion: nn.Module, log: LogFn | None = None) -> Tensor:
+    def loss(
+        self,
+        batch: PINNBatch,
+        criterion: nn.Module,
+        transformer: Transformer,
+        log: LogFn | None = None,
+    ) -> Tensor:
         _, t_colloc = batch
 
         t = t_colloc.requires_grad_(True)
@@ -255,32 +300,29 @@ class SIRInvProblem(Problem):
         self,
         props: SIRInvProperties,
         hp: SIRInvHyperparameters,
-        scaler: SIRInvScaler,
+        transformer: SIRInvTransformer | None = None,
     ) -> None:
-        field_S = Field(config=hp.fields_config)
-        field_I = Field(config=hp.fields_config)
+        S_field = Field(config=replace(hp.fields_config, name="S"))
+        I_field = Field(config=replace(hp.fields_config, name="I"))
         beta = Parameter(config=hp.beta_config)
 
         operator = SIRInvOperator(
-            field_S=field_S,
-            field_I=field_I,
+            field_S=S_field,
+            field_I=I_field,
             weight=hp.pde_weight,
             props=props,
-            scaler=scaler,
             beta=beta,
         )
 
         constraints: list[Constraint] = [
             ICConstraint(
-                field_S=field_S,
-                field_I=field_I,
+                field_S=S_field,
+                field_I=I_field,
                 weight=hp.ic_weight,
                 props=props,
-                scaler=scaler,
             ),
             DataConstraint(
-                field_S=field_S,
-                field_I=field_I,
+                field_I=I_field,
                 weight=hp.data_weight,
             ),
             # BetaSmoothness(
@@ -295,8 +337,9 @@ class SIRInvProblem(Problem):
             operator=operator,
             constraints=constraints,
             criterion=criterion,
-            fields=[field_S, field_I],
-            parameters=[beta],
+            fields=[S_field, I_field],
+            params=[beta],
+            transformer=transformer,
         )
 
 
@@ -309,12 +352,13 @@ class SIRInvDataset(ODEDataset):
 
         # noising I
         noise_level = 1  # TODO: make this a parameter
-        I_obs = torch.poisson(I / noise_level) * noise_level
-        self.obs = torch.stack((self.t, I_obs), dim=1).unsqueeze(-1)
+        obs = torch.poisson(I / noise_level) * noise_level
+        self.t = self.t.unsqueeze(-1)
+        self.obs = obs.unsqueeze(-1)
 
     @override
-    def __getitem__(self, idx: int) -> Tensor:
-        return self.obs[idx]
+    def __getitem__(self, idx: int) -> DataBatch:
+        return (self.t[idx], self.obs[idx])
 
     @override
     def __len__(self) -> int:
@@ -336,49 +380,26 @@ class SIRInvCollocationset(Dataset[Tensor]):
         return len(self.t)
 
 
-class SIRInvScaler(Scaler):
-    def __init__(self, props: SIRInvProperties):
-        self.props = props
-
-    @override
-    def scale_domain(self, domain: Tensor) -> Tensor:
-        return domain
-
-    @override
-    def scale_data(self, data: Tensor) -> Tensor:
-        return data / self.props.N
-
-
-class SIRInvDataModule(pl.LightningDataModule):
+class SIRInvDataModule(PINNDataModule):
     def __init__(
         self,
         props: SIRInvProperties,
         hp: SIRInvHyperparameters,
-        scaler: SIRInvScaler,
+        transformer: SIRInvTransformer | None = None,
     ):
         super().__init__()
         self.props = props
         self.hp = hp
-        self.scaler = scaler
+        self.transformer = transformer
 
     @override
     def setup(self, stage: str | None = None) -> None:
-        self.dataset = SIRInvDataset(self.props)
-        self.collocationset = SIRInvCollocationset(self.props, self.hp)
-
-    @override
-    def train_dataloader(self) -> DataLoader[Batch]:
-        pinn_dataset = PINNDataset(
-            data_ds=self.dataset,
-            coll_ds=self.collocationset,
+        self.data_ds = SIRInvDataset(self.props)
+        self.coll_ds = SIRInvCollocationset(self.props, self.hp)
+        self.pinn_ds = PINNDataset(
+            data_ds=self.data_ds,
+            coll_ds=self.coll_ds,
             batch_size=self.hp.batch_size,
             data_ratio=self.hp.data_ratio,
-            scaler=self.scaler,
-        )
-
-        return DataLoader[Batch](
-            pinn_dataset,
-            batch_size=None,  # handled internally
-            num_workers=7,
-            persistent_workers=True,
+            transformer=self.transformer,
         )

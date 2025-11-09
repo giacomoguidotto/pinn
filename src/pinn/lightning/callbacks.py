@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, TypeAlias, override
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Any, Literal, TypeAlias, override
 
 from lightning.pytorch import LightningModule, Trainer
-from lightning.pytorch.callbacks import Callback, TQDMProgressBar
+from lightning.pytorch.callbacks import BasePredictionWriter, Callback, TQDMProgressBar
+from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
+import torch
+from torch import Tensor
 
 from pinn.lightning.module import SMMAStoppingConfig
 
@@ -102,3 +107,37 @@ class FormattedProgressBar(TQDMProgressBar):
             items[key] = self.format(key, value)
 
         return items
+
+
+PlotFn: TypeAlias = Callable[[dict[str, Tensor]], Figure]
+
+
+class PredictionsWriter(BasePredictionWriter):
+    def __init__(
+        self,
+        dirpath: Path | None = None,
+        plot: PlotFn | None = None,
+        write_interval: Literal["batch", "epoch", "batch_and_epoch"] = "epoch",
+    ):
+        super().__init__(write_interval)
+        self.dirpath = dirpath
+        self.plot = plot
+
+    @override
+    def write_on_epoch_end(
+        self,
+        trainer: Trainer,
+        module: LightningModule,
+        predictions_list: Sequence[Any],
+        batch_indices: Sequence[Any],
+    ) -> None:
+        predictions = predictions_list[0]
+
+        if self.plot is not None:
+            fig = self.plot(predictions)
+            plt.show()  # TODO: save to loggers
+            plt.close(fig)
+
+        if self.dirpath is not None:
+            torch.save(predictions, self.dirpath / "predictions.pt")
+            torch.save(batch_indices, self.dirpath / "batch_indices.pt")

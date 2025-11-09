@@ -8,26 +8,52 @@ import shutil
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
+from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
+import seaborn as sns
+from torch import Tensor
 
 from pinn.core import LOSS_KEY
 from pinn.lightning import PINNModule, SMMAStopping
-from pinn.lightning.callbacks import FormattedProgressBar, Metric
+from pinn.lightning.callbacks import FormattedProgressBar, Metric, PredictionsWriter
 from pinn.problems import SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem, SIRInvProperties
-from pinn.problems.sir_inverse import BETA_KEY, SIRInvScaler
+from pinn.problems.sir_inverse import BETA_KEY, SIRInvTransformer
 
 
-def create_temp_dir() -> Path:
-    temp_dir = Path("./temp")
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-    else:
-        temp_dir.mkdir(exist_ok=True)
-    return temp_dir
+def create_dir(dir: Path) -> Path:
+    if dir.exists():
+        shutil.rmtree(dir)
+
+    dir.mkdir(exist_ok=True)
+    return dir
 
 
 def clean_dir(dir: Path) -> None:
     if dir.exists():
         shutil.rmtree(dir)
+
+
+def format(key: str, value: Metric) -> Metric:
+    if key == LOSS_KEY:
+        return f"{value:.2e}"
+    elif key == BETA_KEY:
+        return f"{value:.5f} -> {props.beta:.5f}"
+
+    return value
+
+
+def plot(predictions: dict[str, Tensor]) -> Figure:
+    t_data = predictions["x_data"].squeeze()
+    I_data = predictions["y_data"].squeeze()
+    I_pred = predictions["I"].squeeze()
+
+    fig, ax = plt.subplots()
+    sns.lineplot(x=t_data, y=I_pred, label="I_pred", ax=ax)
+    sns.lineplot(x=t_data, y=I_data, label="I_data", ax=ax)
+    ax.legend()
+    fig.tight_layout()
+
+    return fig
 
 
 @dataclass
@@ -37,6 +63,7 @@ class SIRInvTrainConfig:
     tensorboard_dir: Path
     csv_dir: Path
     saved_models_dir: Path
+    predictions_dir: Path
 
 
 def train_sir_inverse(
@@ -45,26 +72,33 @@ def train_sir_inverse(
     # prepare
     clean_dir(config.tensorboard_dir / config.name / config.version)
     clean_dir(config.csv_dir / config.name / config.version)
-    temp_dir = create_temp_dir()
+    temp_dir = Path("./temp")
+    create_dir(temp_dir)
+    create_dir(config.predictions_dir)
+    checkpoint_path = config.saved_models_dir / f"{config.version}.ckpt"
 
-    scaler = SIRInvScaler(props)
+    transformer = SIRInvTransformer(props)
 
     dm = SIRInvDataModule(
         props=props,
         hp=hp,
-        scaler=scaler,
+        transformer=transformer,
     )
 
     problem = SIRInvProblem(
         props=props,
         hp=hp,
-        scaler=scaler,
+        transformer=transformer,
     )
 
     module = PINNModule(
         problem=problem,
         hp=hp,
     )
+    # module = PINNModule.load_from_checkpoint(
+    #     checkpoint_path,
+    #     problem=problem,
+    # )
 
     loggers = [
         TensorBoardLogger(
@@ -78,14 +112,6 @@ def train_sir_inverse(
             version=config.version,
         ),
     ]
-
-    def format(key: str, value: Metric) -> Metric:
-        if key == LOSS_KEY:
-            return f"{value:.2e}"
-        elif key == BETA_KEY:
-            return f"{value:.5f} -> {props.beta:.5f}"
-
-        return value
 
     callbacks = [
         ModelCheckpoint(
@@ -102,6 +128,10 @@ def train_sir_inverse(
         FormattedProgressBar(
             refresh_rate=10,
             format=format,
+        ),
+        PredictionsWriter(
+            dirpath=config.predictions_dir,
+            plot=plot,
         ),
     ]
 
@@ -124,16 +154,21 @@ def train_sir_inverse(
     # train
     trainer.fit(module, dm)
 
+    # predict
+    trainer.predict(module, dm)
+
     # save
+    trainer.save_checkpoint(checkpoint_path)
+
+    # clean up
     clean_dir(temp_dir)
-    trainer.save_checkpoint(
-        config.saved_models_dir / f"{config.version}.ckpt",
-    )
 
 
 if __name__ == "__main__":
-    saved_models_dir = Path("./data/versions")
-    log_dir = Path("./data/logs")
+    root_dir = Path("./data")
+    saved_models_dir = root_dir / "versions"
+    predictions_dir = root_dir / "predictions"
+    log_dir = root_dir / "logs"
     tensorboard_dir = log_dir / "tensorboard"
     csv_dir = log_dir / "csv"
 
@@ -145,6 +180,7 @@ if __name__ == "__main__":
         tensorboard_dir=tensorboard_dir,
         csv_dir=csv_dir,
         saved_models_dir=saved_models_dir,
+        predictions_dir=predictions_dir,
     )
 
     train_sir_inverse(props, hp, config)

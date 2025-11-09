@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast, override
+from typing import Literal, Protocol, override
 
 import torch
 from torch import Tensor
 import torch.nn as nn
 
-from pinn.core.dataset import Batch
+from pinn.core.dataset import PINNBatch, Transformer
 
 Activations = Literal[
     "tanh",
@@ -95,6 +95,10 @@ class Field(nn.Module):
         self.net = nn.Sequential(*layers)
         self.apply(self._init)
 
+    @property
+    def name(self) -> str:
+        return self._name
+
     @staticmethod
     def _init(m: nn.Module) -> None:
         if isinstance(m, nn.Linear):
@@ -106,10 +110,6 @@ class Field(nn.Module):
         if self.encode is not None:
             x = self.encode(x)
         return self.net(x)  # type: ignore
-
-    @property
-    def name(self) -> str:
-        return self._name
 
 
 class Parameter(nn.Module):
@@ -147,6 +147,10 @@ class Parameter(nn.Module):
             self.net = nn.Sequential(*layers)
             self.apply(self._init)
 
+    @property
+    def name(self) -> str:
+        return self._name
+
     @staticmethod
     def _init(m: nn.Module) -> None:
         if isinstance(m, nn.Linear):
@@ -161,10 +165,6 @@ class Parameter(nn.Module):
             assert x is not None, "Function-valued parameter requires input"
             return self.net(x)  # type: ignore
 
-    @property
-    def name(self) -> str:
-        return self._name
-
 
 class Operator(Protocol):
     """
@@ -175,8 +175,9 @@ class Operator(Protocol):
 
     def residuals(
         self,
-        t_coll: Tensor,
+        x_coll: Tensor,
         criterion: nn.Module,
+        transformer: Transformer,
         log: LogFn | None = None,
     ) -> Tensor: ...
 
@@ -189,8 +190,9 @@ class Constraint(Protocol):
 
     def loss(
         self,
-        batch: Batch,
+        batch: PINNBatch,
         criterion: nn.Module,
+        transformer: Transformer,
         log: LogFn | None = None,
     ) -> Tensor: ...
 
@@ -206,28 +208,42 @@ class Problem(nn.Module):
         constraints: list[Constraint],
         criterion: nn.Module,
         fields: list[Field],
-        parameters: list[Parameter],
+        params: list[Parameter],
+        transformer: Transformer | None = None,
     ):
         super().__init__()
         self.operator = operator
         self.constraints = constraints
         self.criterion = criterion
 
-        self.fields = nn.ModuleList(fields)
-        self.params = nn.ModuleList(parameters)
+        self.fields = fields
+        self.params = params
+        self._fields = nn.ModuleList(fields)
+        self._params = nn.ModuleList(params)
 
-    def total_loss(self, batch: Batch, log: LogFn | None = None) -> Tensor:
-        _, t_coll = batch
+        self.transformer = transformer or Transformer()
 
-        total = self.operator.residuals(t_coll, self.criterion, log)
+    def total_loss(self, batch: PINNBatch, log: LogFn | None = None) -> Tensor:
+        _, x_coll = batch
+
+        total = self.operator.residuals(x_coll, self.criterion, self.transformer, log)
 
         for c in self.constraints:
-            total = total + c.loss(batch, self.criterion, log)
+            total = total + c.loss(batch, self.criterion, self.transformer, log)
 
         if log is not None:
-            for p in self.params:
-                param = cast(Parameter, p)
+            for param in self.params:
                 log(param.name, param.forward(), progress_bar=True)
             log(LOSS_KEY, total, progress_bar=True)
 
         return total
+
+    def predict(self, x_data: Tensor) -> dict[str, Tensor]:
+        inverse_domain, inverse_values = (
+            self.transformer.inverse_transform_domain,
+            self.transformer.inverse_transform_values,
+        )
+
+        x_data = inverse_domain(x_data)
+
+        return {field.name: inverse_values(field.forward(x_data)) for field in self.fields}
