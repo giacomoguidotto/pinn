@@ -1,11 +1,13 @@
 # src/pinn/train_sir_inverse.py
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
+from typing import Any
 
-from lightning.pytorch import Trainer
+from lightning.pytorch import LightningModule, Trainer
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
 from matplotlib.figure import Figure
@@ -14,7 +16,8 @@ import seaborn as sns
 from torch import Tensor
 
 from pinn.core import LOSS_KEY
-from pinn.lightning import PINNModule, SMMAStopping
+from pinn.lib.utils import get_tensorboard_logger_or_raise
+from pinn.lightning import PINNModule, SMMAStopping, SMMAStoppingConfig
 from pinn.lightning.callbacks import FormattedProgressBar, Metric, PredictionsWriter
 from pinn.problems import SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem, SIRInvProperties
 from pinn.problems.sir_inverse import BETA_KEY, SIRInvTransformer
@@ -33,7 +36,7 @@ def clean_dir(dir: Path) -> None:
         shutil.rmtree(dir)
 
 
-def format(key: str, value: Metric) -> Metric:
+def format_progress_bar(key: str, value: Metric) -> Metric:
     if key == LOSS_KEY:
         return f"{value:.2e}"
     elif key == BETA_KEY:
@@ -42,40 +45,24 @@ def format(key: str, value: Metric) -> Metric:
     return value
 
 
-def plot(predictions: dict[str, Tensor]) -> Figure:
-    t_data = predictions["x_data"].squeeze()
-    I_data = predictions["y_data"].squeeze()
-    I_pred = predictions["I"].squeeze()
-
-    fig, ax = plt.subplots()
-    sns.lineplot(x=t_data, y=I_pred, label="I_pred", ax=ax)
-    sns.lineplot(x=t_data, y=I_data, label="I_data", ax=ax)
-    ax.legend()
-    fig.tight_layout()
-
-    return fig
-
-
 @dataclass
 class SIRInvTrainConfig:
-    name: str
-    version: str
+    run_name: str
     tensorboard_dir: Path
     csv_dir: Path
     saved_models_dir: Path
     predictions_dir: Path
+    experiment_name: str = ""  # empty string defaults to no experiments
 
 
 def train_sir_inverse(
     props: SIRInvProperties, hp: SIRInvHyperparameters, config: SIRInvTrainConfig
 ) -> None:
     # prepare
-    clean_dir(config.tensorboard_dir / config.name / config.version)
-    clean_dir(config.csv_dir / config.name / config.version)
+    model_path = config.saved_models_dir / f"{config.run_name}.ckpt"
+
     temp_dir = Path("./temp")
     create_dir(temp_dir)
-    create_dir(config.predictions_dir)
-    checkpoint_path = config.saved_models_dir / f"{config.version}.ckpt"
 
     transformer = SIRInvTransformer(props)
 
@@ -95,23 +82,31 @@ def train_sir_inverse(
         problem=problem,
         hp=hp,
     )
-    # module = PINNModule.load_from_checkpoint(
-    #     checkpoint_path,
-    #     problem=problem,
-    # )
 
     loggers = [
         TensorBoardLogger(
             save_dir=config.tensorboard_dir,
-            name=config.name,
-            version=config.version,
+            name=config.experiment_name,
+            version=config.run_name,
         ),
         CSVLogger(
             save_dir=config.csv_dir,
-            name=config.name,
-            version=config.version,
+            name=config.experiment_name,
+            version=config.run_name,
         ),
     ]
+
+    def on_prediction(
+        trainer: Trainer,
+        _module: LightningModule,
+        predictions: dict[str, Tensor],
+        _batch_indices: Sequence[Any],
+    ) -> None:
+        fig = plot_predictions(predictions)
+
+        plt.savefig(config.predictions_dir / "predictions.png", dpi=300)
+        logger = get_tensorboard_logger_or_raise(trainer)
+        logger.experiment.add_figure("predictions", fig, global_step=trainer.global_step)
 
     callbacks = [
         ModelCheckpoint(
@@ -127,11 +122,11 @@ def train_sir_inverse(
         ),
         FormattedProgressBar(
             refresh_rate=10,
-            format=format,
+            format=format_progress_bar,
         ),
         PredictionsWriter(
-            dirpath=config.predictions_dir,
-            plot=plot,
+            predictions_path=config.predictions_dir / "predictions.pt",
+            on_prediction=on_prediction,
         ),
     ]
 
@@ -154,33 +149,79 @@ def train_sir_inverse(
     # train
     trainer.fit(module, dm)
 
+    # save
+    trainer.save_checkpoint(model_path)
+
     # predict
     trainer.predict(module, dm)
-
-    # save
-    trainer.save_checkpoint(checkpoint_path)
 
     # clean up
     clean_dir(temp_dir)
 
 
+def plot_predictions(predictions: dict[str, Tensor]) -> Figure:
+    t_data = predictions["x_data"].squeeze()
+    I_data = predictions["y_data"].squeeze()
+    S_pred = predictions["S"].squeeze()
+    I_pred = predictions["I"].squeeze()
+    R_pred = props.N - S_pred - I_pred
+
+    sns.set_theme(style="darkgrid")
+    fig = plt.figure(figsize=(12, 6))
+
+    sns.lineplot(x=t_data, y=S_pred, label="$S_{pred}$")
+    sns.lineplot(x=t_data, y=I_pred, label="$I_{pred}$")
+    sns.lineplot(x=t_data, y=R_pred, label="$R_{pred}$")
+    sns.lineplot(x=t_data, y=I_data, label="$I_{observed}$", linestyle="--")
+
+    plt.title("SIR Model Predictions")
+    plt.xlabel("Time (days)")
+    plt.ylabel("Fraction of Population")
+
+    plt.legend()
+    plt.tight_layout()
+
+    return fig
+
+
 if __name__ == "__main__":
-    root_dir = Path("./data")
-    saved_models_dir = root_dir / "versions"
-    predictions_dir = root_dir / "predictions"
-    log_dir = root_dir / "logs"
+    results_dir = Path("./results")
+    saved_models_dir = results_dir / "models"
+    predictions_dir = results_dir / "predictions"
+    log_dir = results_dir / "logs"
     tensorboard_dir = log_dir / "tensorboard"
     csv_dir = log_dir / "csv"
 
-    props = SIRInvProperties()
-    hp = SIRInvHyperparameters()
+    create_dir(results_dir)
+    create_dir(saved_models_dir)
+    create_dir(predictions_dir)
+    create_dir(log_dir)
+
     config = SIRInvTrainConfig(
-        name="sir_inverse_test",
-        version="v0",
+        run_name="v0",
         tensorboard_dir=tensorboard_dir,
         csv_dir=csv_dir,
         saved_models_dir=saved_models_dir,
         predictions_dir=predictions_dir,
+    )
+
+    props = SIRInvProperties()
+    hp = SIRInvHyperparameters(
+        smma_stopping=SMMAStoppingConfig(
+            window=50,
+            threshold=0.1,
+            lookback=50,
+        ),
+        # beta_config: MLPConfig | ScalarConfig = field(
+        #     default_factory=lambda: MLPConfig(
+        #         in_dim=1,
+        #         out_dim=1,
+        #         hidden_layers=[64, 64],
+        #         activation="tanh",
+        #         output_activation="softplus",
+        #         name=BETA_KEY,
+        #     )
+        # )
     )
 
     train_sir_inverse(props, hp, config)

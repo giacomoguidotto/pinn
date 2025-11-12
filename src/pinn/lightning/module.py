@@ -33,6 +33,7 @@ class SMMAStoppingConfig:
     lookback: int
 
 
+# TODO: consider further modularization of hyperparameters.
 @dataclass
 class PINNHyperparameters:
     max_epochs: int

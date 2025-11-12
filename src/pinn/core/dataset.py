@@ -154,8 +154,10 @@ class PINNDataModule(pl.LightningDataModule):
     @override
     def predict_dataloader(self) -> DataLoader[DataBatch]:
         assert self.data_ds is not None
+        data_size = len(cast(Sized, self.data_ds))
         return DataLoader[DataBatch](
             self.data_ds,
+            batch_size=data_size,
             num_workers=7,
             persistent_workers=True,
         )

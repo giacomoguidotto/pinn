@@ -166,6 +166,7 @@ class Parameter(nn.Module):
             return self.net(x)  # type: ignore
 
 
+# TODO: consider if merging Operator and Constraint into a single protocol is smart.
 class Operator(Protocol):
     """
 

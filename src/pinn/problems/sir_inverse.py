@@ -68,17 +68,7 @@ class SIRInvHyperparameters(PINNHyperparameters):
             output_activation="softplus",
         )
     )
-    # beta_config: MLPConfig = field(
-    #     default_factory=lambda: MLPConfig(
-    #         in_dim=1,
-    #         out_dim=1,
-    #         hidden_layers=[64, 64],
-    #         activation="tanh",
-    #         output_activation="softplus",
-    #         name=BETA_KEY,
-    #     )
-    # )
-    beta_config: ScalarConfig = field(
+    beta_config: MLPConfig | ScalarConfig = field(
         default_factory=lambda: ScalarConfig(
             init_value=0.5,
             name=BETA_KEY,

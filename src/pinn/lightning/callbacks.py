@@ -6,8 +6,6 @@ from typing import Any, Literal, TypeAlias, override
 
 from lightning.pytorch import LightningModule, Trainer
 from lightning.pytorch.callbacks import BasePredictionWriter, Callback, TQDMProgressBar
-from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
 import torch
 from torch import Tensor
 
@@ -27,25 +25,28 @@ class SMMAStopping(Callback):
 
     @override
     def on_train_epoch_end(self, trainer: Trainer, module: LightningModule) -> None:
-        loss = trainer.callback_metrics.get(self.loss_key)
-        if loss is None:
+        # phase 0: get the loss
+        loss_t = trainer.callback_metrics.get(self.loss_key)
+        if loss_t is None:
             return
 
+        loss = loss_t.item()
+        n = self.config.window
+
         # phase 1: collect first `window` losses
-        if len(self.loss_buffer) <= self.config.window:
-            self.loss_buffer.append(loss.item())
+        if len(self.loss_buffer) <= n:
+            self.loss_buffer.append(loss)
             return
 
         # phase 1.5: compute the first average
         if len(self.smma_buffer) == 0:
-            first_smma = sum(self.loss_buffer) / self.config.window
+            first_smma = sum(self.loss_buffer) / n
             self.smma_buffer.append(first_smma)
             return
 
         # phase 2: compute the first `lookback` Smoothed Moving Average (SMMA)
-        n = self.config.window
         smma = self.smma_buffer[-1]
-        smma = ((n - 1) * smma + loss.item()) / n
+        smma = ((n - 1) * smma + loss) / n
         self.smma_buffer.append(smma)
 
         module.log(self.log_key, smma)
@@ -54,15 +55,15 @@ class SMMAStopping(Callback):
 
         # phase 3: compute the improvement between the current and the `lookback` SMMA
         smma_lookback = self.smma_buffer[0]
-        improvement = smma_lookback - smma
-        improvement_ratio = improvement / smma_lookback
+        improvement = (smma_lookback - smma) / smma_lookback
         self.smma_buffer.pop(0)
 
-        if 0 < improvement_ratio < self.config.threshold:
+        module.log("internal/smma_improvement", improvement)
+        if 0 < improvement < self.config.threshold:
             trainer.should_stop = True
             print(
                 f"\nStopping training: SMMA improvement over {self.config.lookback} "
-                f"epochs ({improvement_ratio:.2%}) below threshold ({self.config.threshold:.2%})"
+                f"epochs ({improvement:.2%}) below threshold ({self.config.threshold:.2%})"
             )
 
 
@@ -109,19 +110,21 @@ class FormattedProgressBar(TQDMProgressBar):
         return items
 
 
-PlotFn: TypeAlias = Callable[[dict[str, Tensor]], Figure]
+HookFn: TypeAlias = Callable[[Trainer, LightningModule, dict[str, Tensor], Sequence[Any]], None]
 
 
 class PredictionsWriter(BasePredictionWriter):
     def __init__(
         self,
-        dirpath: Path | None = None,
-        plot: PlotFn | None = None,
+        predictions_path: Path | None = None,
+        batch_indices_path: Path | None = None,
+        on_prediction: HookFn | None = None,
         write_interval: Literal["batch", "epoch", "batch_and_epoch"] = "epoch",
     ):
         super().__init__(write_interval)
-        self.dirpath = dirpath
-        self.plot = plot
+        self.predictions_path = predictions_path
+        self.batch_indices_path = batch_indices_path
+        self.on_prediction = on_prediction
 
     @override
     def write_on_epoch_end(
@@ -133,11 +136,10 @@ class PredictionsWriter(BasePredictionWriter):
     ) -> None:
         predictions = predictions_list[0]
 
-        if self.plot is not None:
-            fig = self.plot(predictions)
-            plt.show()  # TODO: save to loggers
-            plt.close(fig)
+        if self.on_prediction is not None:
+            self.on_prediction(trainer, module, predictions, batch_indices)
 
-        if self.dirpath is not None:
-            torch.save(predictions, self.dirpath / "predictions.pt")
-            torch.save(batch_indices, self.dirpath / "batch_indices.pt")
+        if self.predictions_path is not None:
+            torch.save(predictions, self.predictions_path)
+        if self.batch_indices_path is not None:
+            torch.save(batch_indices, self.batch_indices_path)
