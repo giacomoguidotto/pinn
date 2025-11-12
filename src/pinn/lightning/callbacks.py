@@ -58,7 +58,6 @@ class SMMAStopping(Callback):
         improvement = (smma_lookback - smma) / smma_lookback
         self.smma_buffer.pop(0)
 
-        module.log("internal/smma_improvement", improvement)
         if 0 < improvement < self.config.threshold:
             trainer.should_stop = True
             print(

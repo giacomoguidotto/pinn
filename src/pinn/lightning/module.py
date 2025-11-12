@@ -79,9 +79,9 @@ class PINNModule(pl.LightningModule):
 
     @override
     def training_step(self, batch: PINNBatch, batch_idx: int) -> Tensor:
-        total = self.problem.total_loss(batch, self._log)
+        loss = self.problem.total_loss(batch, self._log)
 
-        return total
+        return loss
 
     @override
     def predict_step(self, batch: DataBatch, batch_idx: int) -> dict[str, Tensor]:

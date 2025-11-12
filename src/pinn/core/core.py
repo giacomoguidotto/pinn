@@ -124,13 +124,14 @@ class Parameter(nn.Module):
     ):
         super().__init__()
         self._name = config.name
+        self._mode: Literal["scalar", "mlp"]
 
         if isinstance(config, ScalarConfig):
-            self.mode = "scalar"
+            self._mode = "scalar"
             self.value = nn.Parameter(torch.tensor(float(config.init_value), dtype=torch.float32))
 
         else:  # isinstance(config, MLPConfig)
-            self.mode = "mlp"
+            self._mode = "mlp"
             dims = [config.in_dim] + config.hidden_layers + [config.out_dim]
             act = get_activation(config.activation)
 
@@ -150,6 +151,10 @@ class Parameter(nn.Module):
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def mode(self) -> Literal["scalar", "mlp"]:
+        return self._mode
 
     @staticmethod
     def _init(m: nn.Module) -> None:
@@ -234,7 +239,8 @@ class Problem(nn.Module):
 
         if log is not None:
             for param in self.params:
-                log(param.name, param.forward(), progress_bar=True)
+                if param.mode == "scalar":
+                    log(param.name, param.forward(), progress_bar=True)
             log(LOSS_KEY, total, progress_bar=True)
 
         return total

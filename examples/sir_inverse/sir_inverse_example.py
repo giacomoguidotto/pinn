@@ -24,9 +24,6 @@ from pinn.problems.sir_inverse import BETA_KEY, SIRInvTransformer
 
 
 def create_dir(dir: Path) -> Path:
-    if dir.exists():
-        shutil.rmtree(dir)
-
     dir.mkdir(exist_ok=True)
     return dir
 
@@ -61,8 +58,8 @@ def train_sir_inverse(
     # prepare
     model_path = config.saved_models_dir / f"{config.run_name}.ckpt"
 
-    temp_dir = Path("./temp")
-    create_dir(temp_dir)
+    temp_dir = create_dir(Path("./temp"))
+    clean_dir(temp_dir)
 
     transformer = SIRInvTransformer(props)
 
@@ -185,23 +182,27 @@ def plot_predictions(predictions: dict[str, Tensor]) -> Figure:
 
 
 if __name__ == "__main__":
+    run_name = "v0"
+
     results_dir = Path("./results")
-    saved_models_dir = results_dir / "models"
-    predictions_dir = results_dir / "predictions"
+
     log_dir = results_dir / "logs"
     tensorboard_dir = log_dir / "tensorboard"
     csv_dir = log_dir / "csv"
 
+    models_dir = results_dir / "models" / run_name
+    predictions_dir = models_dir / "predictions"
+
     create_dir(results_dir)
-    create_dir(saved_models_dir)
+    create_dir(models_dir)
     create_dir(predictions_dir)
     create_dir(log_dir)
 
     config = SIRInvTrainConfig(
-        run_name="v0",
+        run_name=run_name,
         tensorboard_dir=tensorboard_dir,
         csv_dir=csv_dir,
-        saved_models_dir=saved_models_dir,
+        saved_models_dir=models_dir,
         predictions_dir=predictions_dir,
     )
 
@@ -212,15 +213,13 @@ if __name__ == "__main__":
             threshold=0.1,
             lookback=50,
         ),
-        # beta_config: MLPConfig | ScalarConfig = field(
-        #     default_factory=lambda: MLPConfig(
-        #         in_dim=1,
-        #         out_dim=1,
-        #         hidden_layers=[64, 64],
-        #         activation="tanh",
-        #         output_activation="softplus",
-        #         name=BETA_KEY,
-        #     )
+        # beta_config=MLPConfig(
+        #     in_dim=1,
+        #     out_dim=1,
+        #     hidden_layers=[64, 64],
+        #     activation="tanh",
+        #     output_activation="softplus",
+        #     name=BETA_KEY,
         # )
     )
 
