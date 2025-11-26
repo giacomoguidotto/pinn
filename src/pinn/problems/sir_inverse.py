@@ -1,9 +1,8 @@
-# src/pinn/sir.py
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import TypeAlias, TypeVar, override
+import math
+from typing import TypeVar, override
 
 import torch
 from torch import Tensor
@@ -11,6 +10,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 
 from pinn.core import (
+    Argument,
     Constraint,
     DataBatch,
     Field,
@@ -25,21 +25,28 @@ from pinn.core import (
     ScalarConfig,
     Transformer,
 )
+from pinn.lib.utils import get_arg_or_raise
 from pinn.lightning import PINNHyperparameters, SchedulerConfig
-from pinn.problems.ode import Domain1D, ODEDataset, ODEProperties
+from pinn.problems.ode import Domain1D, ODECallable, ODEDataset, ODEProperties
 
 BETA_KEY = "params/beta"
 
-SIRCallable: TypeAlias = Callable[[Tensor, Tensor, float, float, float], Tensor]
+
+def SIR(x: Tensor, y: Tensor, args: list[Argument]) -> Tensor:
+    S, I = y
+    b = get_arg_or_raise(args, "beta")
+    d = get_arg_or_raise(args, "delta")
+    N = get_arg_or_raise(args, "N")
+
+    dS = -b(x) * S * I / N(x)  # TODO: N should be a constant
+    dI = b(x) * S * I / N(x) - d(x) * I
+    # dR = d(x) * I
+    return torch.stack([dS, dI])
 
 
-def SIR(_: Tensor, y: Tensor, d: float, b: float, N: float) -> Tensor:
-    S, I, _ = y.unbind()
-
-    dS = -b * S * I / N
-    dI = b * S * I / N - d * I
-    dR = d * I
-    return torch.stack([dS, dI, dR])
+# TODO: should this return a tensor?
+def beta_fn(x: Tensor) -> float:
+    return 0.6 * (1 + torch.sin(x * 2 * math.pi / 90.0)).item()
 
 
 @dataclass
@@ -83,7 +90,7 @@ class SIRInvHyperparameters(PINNHyperparameters):
 
 @dataclass
 class SIRInvProperties(ODEProperties):
-    ode: SIRCallable = field(default_factory=lambda: SIR)
+    ode: ODECallable = field(default_factory=lambda: SIR)
     domain: Domain1D = field(
         default_factory=lambda: Domain1D(
             x0=0.0,
@@ -94,16 +101,20 @@ class SIRInvProperties(ODEProperties):
     N: float = 56e6
     delta: float = 1 / 5
     beta: float = delta * 3.0
-    args: tuple[float, float, float] = (delta, beta, N)
+    args: list[Argument] = field(default_factory=list)
 
     I0: float = 1.0
     Y0: list[float] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        S0 = self.N - self.I0
-        R0 = self.N - self.I0 - S0  # 0 by definition
-        self.Y0 = [S0, self.I0, R0]
+        self.args = [
+            Argument(self.delta, name="delta"),
+            Argument(self.beta, name="beta"),
+            Argument(self.N, name="N"),
+        ]
 
+        S0 = self.N - self.I0
+        self.Y0 = [S0, self.I0]
 
 class SIRInvTransformer(Transformer):
     T = TypeVar("T", Tensor, float)
@@ -126,12 +137,17 @@ class SIRInvOperator(Operator):
         field_S: Field,
         field_I: Field,
         beta: Parameter,
+        # params: list[Parameter],
         props: SIRInvProperties,
         weight: float,
     ):
         self.SIR = props.ode
         self.delta = props.delta
         self.N = props.N
+
+        # params_names = [p.name for p in params]
+        # _params = cast(list[Argument], params)
+        # self.args: list[Argument] = [a for a in props.args if a.name not in params_names] + _params
 
         self.S = field_S
         self.I = field_I
@@ -141,7 +157,7 @@ class SIRInvOperator(Operator):
     @override
     def residuals(
         self,
-        t_coll: Tensor,
+        t_coll: Tensor,  # already scaled
         criterion: nn.Module,
         transformer: Transformer,
         log: LogFn | None = None,
@@ -151,13 +167,20 @@ class SIRInvOperator(Operator):
 
         S = self.S(t_coll)
         I = self.I(t_coll)
-        R = N - S - I
-        y = torch.stack([S, I, R])
+        y = torch.stack([S, I])
 
         beta = self.beta(t_coll)
 
-        dy = self.SIR(t_coll, y, self.delta, beta, N)
-        dS_pred, dI_pred, _ = dy
+        dy = self.SIR(
+            t_coll,
+            y,
+            [
+                Argument(self.delta, name="delta"),
+                Argument(beta, name="beta"),
+                Argument(N, name="N"),
+            ],
+        )
+        dS_pred, dI_pred = dy
 
         dS = torch.autograd.grad(S, t_coll, torch.ones_like(S), create_graph=True)[0]
         dI = torch.autograd.grad(I, t_coll, torch.ones_like(I), create_graph=True)[0]
@@ -233,7 +256,7 @@ class ICConstraint(Constraint):
         device = batch[1].device
 
         t0 = transformer.transform_domain(self.t0.to(device))
-        S0, I0, _ = transformer.transform_values(self.Y0.to(device))
+        S0, I0 = transformer.transform_values(self.Y0.to(device))
 
         S0_pred = self.S(t0)
         I0_pred = self.I(t0)
@@ -302,6 +325,7 @@ class SIRInvProblem(Problem):
             weight=hp.pde_weight,
             props=props,
             beta=beta,
+            # params=[beta],
         )
 
         constraints: list[Constraint] = [

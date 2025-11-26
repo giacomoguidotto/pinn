@@ -7,10 +7,10 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from torchdiffeq import odeint
 
-from pinn.core import DataBatch
+from pinn.core import Argument, DataBatch
 
-ODECallable = Callable[..., Tensor]
-# ODECallable = Callable[[Tensor, Tensor, list[Argument]], Tensor]
+# ODECallable = Callable[..., Tensor]
+ODECallable = Callable[[Tensor, Tensor, list[Argument]], Tensor]
 """
 ODE function signature:
     ode(x: Tensor, y: Tensor, args: list[Argument]) -> Tensor
@@ -31,8 +31,8 @@ class Domain1D:
 class ODEProperties:
     ode: ODECallable
     domain: Domain1D
-    args: tuple[Any, ...]
-    # args: list[Argument]
+    # args: tuple[Any, ...]
+    args: list[Argument]
     Y0: list[float]
 
 
@@ -45,7 +45,7 @@ class ODEDataset(Dataset[DataBatch]):
         y0 = torch.tensor(props.Y0, dtype=torch.float32)
 
         self.data: Tensor = odeint(
-            lambda x, y: props.ode(x, y, *props.args),
+            lambda x, y: props.ode(x, y, props.args),
             y0,
             self.x,
         )
