@@ -30,13 +30,15 @@ from pinn.lightning import PINNHyperparameters, SchedulerConfig
 from pinn.problems.ode import Domain1D, ODECallable, ODEDataset, ODEProperties
 
 BETA_KEY = "params/beta"
+DELTA_KEY = "args/delta"
+N_KEY = "args/N"
 
 
 def SIR(x: Tensor, y: Tensor, args: list[Argument]) -> Tensor:
     S, I = y
-    b = get_arg_or_raise(args, "beta")
-    d = get_arg_or_raise(args, "delta")
-    N = get_arg_or_raise(args, "N")
+    b = get_arg_or_raise(args, BETA_KEY)
+    d = get_arg_or_raise(args, DELTA_KEY)
+    N = get_arg_or_raise(args, N_KEY)
 
     dS = -b(x) * S * I / N(x)  # TODO: N should be a constant
     dI = b(x) * S * I / N(x) - d(x) * I
@@ -108,9 +110,9 @@ class SIRInvProperties(ODEProperties):
 
     def __post_init__(self) -> None:
         self.args = [
-            Argument(self.delta, name="delta"),
-            Argument(self.beta, name="beta"),
-            Argument(self.N, name="N"),
+            Argument(self.delta, name=DELTA_KEY),
+            Argument(self.beta, name=BETA_KEY),
+            Argument(self.N, name=N_KEY),
         ]
 
         S0 = self.N - self.I0
@@ -136,22 +138,18 @@ class SIRInvOperator(Operator):
         self,
         field_S: Field,
         field_I: Field,
-        beta: Parameter,
-        # params: list[Parameter],
+        params: list[Parameter],
         props: SIRInvProperties,
         weight: float,
     ):
         self.SIR = props.ode
-        self.delta = props.delta
-        self.N = props.N
-
-        # params_names = [p.name for p in params]
-        # _params = cast(list[Argument], params)
-        # self.args: list[Argument] = [a for a in props.args if a.name not in params_names] + _params
-
         self.S = field_S
         self.I = field_I
-        self.beta = beta
+
+        params_names = [p.name for p in params]
+        self.args = [a for a in props.args if a.name not in params_names]
+        self.args.extend(params)
+
         self.weight = weight
 
     @override
@@ -163,23 +161,17 @@ class SIRInvOperator(Operator):
         log: LogFn | None = None,
     ) -> Tensor:
         t_coll = t_coll.requires_grad_(True)
-        N = transformer.transform_values(self.N)
 
         S = self.S(t_coll)
         I = self.I(t_coll)
         y = torch.stack([S, I])
 
-        beta = self.beta(t_coll)
+        # TODO: remove workaround for N
+        for a in self.args:
+            if a.name == N_KEY:
+                a._value = 1.0
 
-        dy = self.SIR(
-            t_coll,
-            y,
-            [
-                Argument(self.delta, name="delta"),
-                Argument(beta, name="beta"),
-                Argument(N, name="N"),
-            ],
-        )
+        dy = self.SIR(t_coll, y, self.args)
         dS_pred, dI_pred = dy
 
         dS = torch.autograd.grad(S, t_coll, torch.ones_like(S), create_graph=True)[0]
@@ -324,8 +316,7 @@ class SIRInvProblem(Problem):
             field_I=I_field,
             weight=hp.pde_weight,
             props=props,
-            beta=beta,
-            # params=[beta],
+            params=[beta],
         )
 
         constraints: list[Constraint] = [

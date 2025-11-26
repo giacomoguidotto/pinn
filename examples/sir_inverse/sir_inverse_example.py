@@ -60,6 +60,7 @@ def train_sir_inverse(
 
     temp_dir = create_dir(Path("./temp"))
     clean_dir(temp_dir)
+    clean_dir(config.tensorboard_dir / config.experiment_name / config.run_name)
 
     transformer = SIRInvTransformer(props)
 
@@ -182,7 +183,7 @@ def plot_predictions(predictions: dict[str, Tensor]) -> Figure:
 
 
 if __name__ == "__main__":
-    run_name = "v2"
+    run_name = "v3"
 
     results_dir = Path("./results")
 

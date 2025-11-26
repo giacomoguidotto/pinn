@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, override
+from typing import override
 
 import torch
 from torch import Tensor

@@ -114,7 +114,7 @@ class Field(nn.Module):
 
 class Argument:
     def __init__(self, value: float | Callable[[Tensor], float], name: str):
-        self.value = value
+        self._value = value
         self._name = name
 
     @property
@@ -122,13 +122,13 @@ class Argument:
         return self._name
 
     def __call__(self, x: Tensor) -> float:
-        if callable(self.value):
-            return self.value(x)
+        if callable(self._value):
+            return self._value(x)
         else:
-            return self.value
+            return self._value
 
 
-class Parameter(nn.Module):
+class Parameter(nn.Module, Argument):
     """
     Learnable parameter. Supports scalar or function-valued parameter.
     For β(t), use a small MLP with in_dim=1 -> out_dim=1.
