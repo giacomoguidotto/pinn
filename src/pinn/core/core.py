@@ -112,6 +112,22 @@ class Field(nn.Module):
         return self.net(x)  # type: ignore
 
 
+class Argument:
+    def __init__(self, value: float | Callable[[Tensor], float], name: str):
+        self.value = value
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def __call__(self, x: Tensor) -> float:
+        if callable(self.value):
+            return self.value(x)
+        else:
+            return self.value
+
+
 class Parameter(nn.Module):
     """
     Learnable parameter. Supports scalar or function-valued parameter.
@@ -169,7 +185,6 @@ class Parameter(nn.Module):
         else:
             assert x is not None, "Function-valued parameter requires input"
             return self.net(x)  # type: ignore
-
 
 # TODO: consider if merging Operator and Constraint into a single protocol is smart.
 class Operator(Protocol):
@@ -241,6 +256,8 @@ class Problem(nn.Module):
             for param in self.params:
                 if param.mode == "scalar":
                     log(param.name, param.forward(), progress_bar=True)
+                # else if param.mode == "mlp": log euclidean norm of the parameters with the ref
+                # function if provided
             log(LOSS_KEY, total, progress_bar=True)
 
         return total

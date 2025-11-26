@@ -30,9 +30,11 @@ class Transformer:
         return domain
 
     def transform_values(self, values: T) -> T:
+        # def transform_values(self, values: Tensor) -> Tensor:
         return values
 
     def inverse_transform_values(self, values: T) -> T:
+        # def inverse_transform_values(self, values: Tensor) -> Tensor:
         return values
 
     def transform_batch(self, batch: PINNBatch) -> PINNBatch:

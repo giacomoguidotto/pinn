@@ -86,8 +86,8 @@ class SIRInvProperties(ODEProperties):
     ode: SIRCallable = field(default_factory=lambda: SIR)
     domain: Domain1D = field(
         default_factory=lambda: Domain1D(
-            t0=0.0,
-            t1=90.0,
+            x0=0.0,
+            x1=90.0,
         )
     )
 
@@ -216,7 +216,7 @@ class ICConstraint(Constraint):
         props: SIRInvProperties,
     ):
         self.Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
-        self.t0 = torch.tensor(props.domain.t0, dtype=torch.float32).reshape(1, 1)
+        self.t0 = torch.tensor(props.domain.x0, dtype=torch.float32).reshape(1, 1)
 
         self.S = field_S
         self.I = field_I
@@ -343,12 +343,12 @@ class SIRInvDataset(ODEDataset):
         # noising I
         noise_level = 1  # TODO: make this a parameter
         obs = torch.poisson(I / noise_level) * noise_level
-        self.t = self.t.unsqueeze(-1)
+        self.x = self.x.unsqueeze(-1)
         self.obs = obs.unsqueeze(-1)
 
     @override
     def __getitem__(self, idx: int) -> DataBatch:
-        return (self.t[idx], self.obs[idx])
+        return (self.x[idx], self.obs[idx])
 
     @override
     def __len__(self) -> int:
@@ -357,8 +357,8 @@ class SIRInvDataset(ODEDataset):
 
 class SIRInvCollocationset(Dataset[Tensor]):
     def __init__(self, props: SIRInvProperties, hp: SIRInvHyperparameters):
-        t0_s = torch.log1p(torch.tensor(props.domain.t0, dtype=torch.float32))
-        t1_s = torch.log1p(torch.tensor(props.domain.t1, dtype=torch.float32))
+        t0_s = torch.log1p(torch.tensor(props.domain.x0, dtype=torch.float32))
+        t1_s = torch.log1p(torch.tensor(props.domain.x1, dtype=torch.float32))
         t_s = torch.rand((hp.collocations, 1)) * (t1_s - t0_s) + t0_s
         self.t = torch.expm1(t_s)
 
