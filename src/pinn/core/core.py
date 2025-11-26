@@ -253,8 +253,8 @@ class Problem(nn.Module):
             for param in self.params:
                 if param.mode == "scalar":
                     log(param.name, param.forward(), progress_bar=True)
-                # else if param.mode == "mlp": log euclidean norm of the parameters with the ref
-                # function if provided
+                # else if param.mode == "mlp":
+                #     log euclidean norm of the parameters with the ref function if provided
             log(LOSS_KEY, total, progress_bar=True)
 
         return total

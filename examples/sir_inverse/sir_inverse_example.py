@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch import Tensor
 
-from pinn.core import LOSS_KEY
+from pinn.core import LOSS_KEY, MLPConfig
 from pinn.lib.utils import get_tensorboard_logger_or_raise
 from pinn.lightning import PINNModule, SMMAStopping, SMMAStoppingConfig
 from pinn.lightning.callbacks import FormattedProgressBar, Metric, PredictionsWriter
@@ -183,7 +183,7 @@ def plot_predictions(predictions: dict[str, Tensor]) -> Figure:
 
 
 if __name__ == "__main__":
-    run_name = "v3"
+    run_name = "v4"
 
     results_dir = Path("./results")
 
@@ -214,14 +214,14 @@ if __name__ == "__main__":
             threshold=0.1,
             lookback=50,
         ),
-        # beta_config=MLPConfig(
-        #     in_dim=1,
-        #     out_dim=1,
-        #     hidden_layers=[64, 64],
-        #     activation="tanh",
-        #     output_activation="softplus",
-        #     name=BETA_KEY,
-        # )
+        beta_config=MLPConfig(
+            in_dim=1,
+            out_dim=1,
+            hidden_layers=[64, 64],
+            activation="tanh",
+            output_activation="softplus",
+            name=BETA_KEY,
+        ),
     )
 
     train_sir_inverse(props, hp, config)
