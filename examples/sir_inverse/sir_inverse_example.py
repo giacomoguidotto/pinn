@@ -183,7 +183,7 @@ def plot_predictions(predictions: dict[str, Tensor]) -> Figure:
 
 
 if __name__ == "__main__":
-    run_name = "v4"
+    run_name = "v5"
 
     results_dir = Path("./results")
 

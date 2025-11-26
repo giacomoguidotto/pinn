@@ -260,11 +260,11 @@ class Problem(nn.Module):
         return total
 
     def predict(self, x_data: Tensor) -> dict[str, Tensor]:
-        inverse_domain, inverse_values = (
-            self.transformer.inverse_transform_domain,
+        transform_domain, inverse_values = (
+            self.transformer.transform_domain,
             self.transformer.inverse_transform_values,
         )
 
-        x_data = inverse_domain(x_data)
+        x_data = transform_domain(x_data)
 
         return {field.name: inverse_values(field.forward(x_data)) for field in self.fields}

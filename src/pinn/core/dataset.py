@@ -1,5 +1,5 @@
 from collections.abc import Sized
-from typing import TypeAlias, TypeVar, cast, override
+from typing import TypeAlias, cast, override
 
 import lightning as pl
 import torch
@@ -21,20 +21,16 @@ class Transformer:
     Apply a transformation to a batch of data and collocations.
     """
 
-    T = TypeVar("T", Tensor, float)
-
     def transform_domain(self, domain: Tensor) -> Tensor:
         return domain
 
     def inverse_transform_domain(self, domain: Tensor) -> Tensor:
         return domain
 
-    def transform_values(self, values: T) -> T:
-        # def transform_values(self, values: Tensor) -> Tensor:
+    def transform_values(self, values: Tensor) -> Tensor:
         return values
 
-    def inverse_transform_values(self, values: T) -> T:
-        # def inverse_transform_values(self, values: Tensor) -> Tensor:
+    def inverse_transform_values(self, values: Tensor) -> Tensor:
         return values
 
     def transform_batch(self, batch: PINNBatch) -> PINNBatch:

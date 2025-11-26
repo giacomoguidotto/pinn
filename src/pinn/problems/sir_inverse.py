@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 import math
-from typing import TypeVar, override
+from typing import override
 
 import torch
 from torch import Tensor
@@ -120,17 +120,23 @@ class SIRInvProperties(ODEProperties):
 
 
 class SIRInvTransformer(Transformer):
-    T = TypeVar("T", Tensor, float)
-
     def __init__(self, props: SIRInvProperties):
         self.props = props
 
     @override
-    def transform_values(self, data: T) -> T:
+    def transform_domain(self, domain: Tensor) -> Tensor:
+        return domain / (self.props.domain.x1 - self.props.domain.x0)
+
+    @override
+    def inverse_transform_domain(self, domain: Tensor) -> Tensor:
+        return domain * (self.props.domain.x1 - self.props.domain.x0)
+
+    @override
+    def transform_values(self, data: Tensor) -> Tensor:
         return data / self.props.N
 
     @override
-    def inverse_transform_values(self, data: T) -> T:
+    def inverse_transform_values(self, data: Tensor) -> Tensor:
         return data * self.props.N
 
 
@@ -177,6 +183,9 @@ class SIRInvOperator(Operator):
 
         dS = torch.autograd.grad(S, t_coll, torch.ones_like(S), create_graph=True)[0]
         dI = torch.autograd.grad(I, t_coll, torch.ones_like(I), create_graph=True)[0]
+
+        dS = transformer.transform_domain(dS)
+        dI = transformer.transform_domain(dI)
 
         S_res: Tensor = dS - dS_pred
         I_res: Tensor = dI - dI_pred
