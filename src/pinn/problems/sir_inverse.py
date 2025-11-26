@@ -118,6 +118,7 @@ class SIRInvProperties(ODEProperties):
         S0 = self.N - self.I0
         self.Y0 = [S0, self.I0]
 
+
 class SIRInvTransformer(Transformer):
     T = TypeVar("T", Tensor, float)
 

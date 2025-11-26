@@ -165,10 +165,6 @@ class Parameter(nn.Module, Argument):
             self.apply(self._init)
 
     @property
-    def name(self) -> str:
-        return self._name
-
-    @property
     def mode(self) -> Literal["scalar", "mlp"]:
         return self._mode
 
@@ -185,6 +181,7 @@ class Parameter(nn.Module, Argument):
         else:
             assert x is not None, "Function-valued parameter requires input"
             return self.net(x)  # type: ignore
+
 
 # TODO: consider if merging Operator and Constraint into a single protocol is smart.
 class Operator(Protocol):
