@@ -163,7 +163,7 @@ class SIRInvOperator(Operator):
     @override
     def residuals(
         self,
-        t_coll: Tensor,  # already scaled
+        t_coll: Tensor,
         criterion: nn.Module,
         transformer: Transformer,
         log: LogFn | None = None,
