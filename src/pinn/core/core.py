@@ -8,7 +8,7 @@ import torch
 from torch import Tensor
 import torch.nn as nn
 
-from pinn.core.dataset import PINNBatch, Transformer
+from pinn.core.dataset import DataBatch, PINNBatch, Transformer
 
 Activations = Literal[
     "tanh",
@@ -259,12 +259,15 @@ class Problem(nn.Module):
 
         return total
 
-    def predict(self, x_data: Tensor) -> dict[str, Tensor]:
-        transform_domain, inverse_values = (
-            self.transformer.transform_domain,
-            self.transformer.inverse_transform_values,
-        )
+    def predict(self, batch: DataBatch) -> dict[str, Tensor]:
+        x_data, y_data = batch
 
-        x_data = transform_domain(x_data)
+        results = {
+            "x_data": self.transformer.inverse_domain(x_data),
+            "y_data": self.transformer.inverse_values(y_data),
+        }
 
-        return {field.name: inverse_values(field.forward(x_data)) for field in self.fields}
+        for field in self.fields:
+            results[field.name] = self.transformer.inverse_values(field(x_data))
+
+        return results

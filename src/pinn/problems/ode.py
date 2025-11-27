@@ -20,11 +20,12 @@ ODE function signature:
 @dataclass
 class Domain1D:
     """
-    One-dimensional domain: time interval [x0, x1].
+    One-dimensional domain: time interval [x0, x1] with step size dx.
     """
 
     x0: float
     x1: float
+    dx: float = 1.0
 
 
 @dataclass
@@ -39,7 +40,8 @@ class ODEProperties:
 class ODEDataset(Dataset[DataBatch]):
     def __init__(self, props: ODEProperties):
         x0, x1 = props.domain.x0, props.domain.x1
-        steps = int(x1 - x0 + 1)
+        dx = props.domain.dx
+        steps = int((x1 - x0) / dx) + 1
         self.x = torch.linspace(x0, x1, steps)
 
         y0 = torch.tensor(props.Y0, dtype=torch.float32)

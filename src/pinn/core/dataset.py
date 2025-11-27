@@ -24,13 +24,13 @@ class Transformer:
     def transform_domain(self, domain: Tensor) -> Tensor:
         return domain
 
-    def inverse_transform_domain(self, domain: Tensor) -> Tensor:
+    def inverse_domain(self, domain: Tensor) -> Tensor:
         return domain
 
     def transform_values(self, values: Tensor) -> Tensor:
         return values
 
-    def inverse_transform_values(self, values: Tensor) -> Tensor:
+    def inverse_values(self, values: Tensor) -> Tensor:
         return values
 
     def transform_batch(self, batch: PINNBatch) -> PINNBatch:
@@ -70,7 +70,6 @@ class PINNDataset(Dataset[PINNBatch]):
         coll_ds: Dataset[Tensor],
         batch_size: int,
         data_ratio: float | int,
-        transformer: Transformer | None = None,
     ):
         super().__init__()
         assert batch_size > 0
@@ -87,7 +86,6 @@ class PINNDataset(Dataset[PINNBatch]):
 
         self.batch_size = batch_size
         self.C = batch_size - self.K
-        self.transformer = transformer or Transformer()
 
         self.total_data = len(cast(Sized, data_ds))
         self.total_coll = len(cast(Sized, coll_ds))
@@ -105,9 +103,7 @@ class PINNDataset(Dataset[PINNBatch]):
         x_data, y_data = self.data_ds[data_idx]
         x_coll = self.coll_ds[coll_idx]
 
-        batch = ((x_data, y_data), x_coll)
-
-        return self.transformer.transform_batch(batch)
+        return ((x_data, y_data), x_coll)
 
     def _get_data_indices(self, idx: int) -> Tensor:
         """Get data indices for this step without replacement.

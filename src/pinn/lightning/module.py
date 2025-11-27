@@ -79,16 +79,11 @@ class PINNModule(pl.LightningModule):
 
     @override
     def training_step(self, batch: PINNBatch, batch_idx: int) -> Tensor:
-        loss = self.problem.total_loss(batch, self._log)
-
-        return loss
+        return self.problem.total_loss(batch, self._log)
 
     @override
     def predict_step(self, batch: DataBatch, batch_idx: int) -> dict[str, Tensor]:
-        x_data, y_data = batch
-        y_pred = self.problem.predict(x_data)
-
-        return {"x_data": x_data, "y_data": y_data, **y_pred}
+        return self.problem.predict(batch)
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:

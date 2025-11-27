@@ -56,6 +56,7 @@ class SIRInvHyperparameters(PINNHyperparameters):
     max_epochs: int = 1000
     batch_size: int = 100
     data_ratio: int | float = 2
+    data_noise_level: float = 1.0
     collocations: int = 6000
     lr: float = 5e-4
     gradient_clip_val: float = 0.1
@@ -128,7 +129,7 @@ class SIRInvTransformer(Transformer):
         return domain / (self.props.domain.x1 - self.props.domain.x0)
 
     @override
-    def inverse_transform_domain(self, domain: Tensor) -> Tensor:
+    def inverse_domain(self, domain: Tensor) -> Tensor:
         return domain * (self.props.domain.x1 - self.props.domain.x0)
 
     @override
@@ -136,7 +137,7 @@ class SIRInvTransformer(Transformer):
         return data / self.props.N
 
     @override
-    def inverse_transform_values(self, data: Tensor) -> Tensor:
+    def inverse_values(self, data: Tensor) -> Tensor:
         return data * self.props.N
 
 
@@ -359,17 +360,22 @@ class SIRInvProblem(Problem):
 
 
 class SIRInvDataset(ODEDataset):
-    def __init__(self, props: SIRInvProperties):
+    def __init__(
+        self,
+        props: SIRInvProperties,
+        hp: SIRInvHyperparameters,
+        transformer: Transformer,
+    ):
         # SIR components are generated in self.data
         super().__init__(props)
-
         I = self.data[:, 1].clamp_min(0.0)
 
         # noising I
-        noise_level = 1  # TODO: make this a parameter
-        obs = torch.poisson(I / noise_level) * noise_level
-        self.x = self.x.unsqueeze(-1)
-        self.obs = obs.unsqueeze(-1)
+        obs = torch.poisson(I / hp.data_noise_level) * hp.data_noise_level
+
+        # transforming
+        self.x = transformer.transform_domain(self.x.unsqueeze(-1))
+        self.obs = transformer.transform_values(obs.unsqueeze(-1))
 
     @override
     def __getitem__(self, idx: int) -> DataBatch:
@@ -381,11 +387,19 @@ class SIRInvDataset(ODEDataset):
 
 
 class SIRInvCollocationset(Dataset[Tensor]):
-    def __init__(self, props: SIRInvProperties, hp: SIRInvHyperparameters):
+    def __init__(
+        self,
+        props: SIRInvProperties,
+        hp: SIRInvHyperparameters,
+        transformer: Transformer,
+    ):
         t0_s = torch.log1p(torch.tensor(props.domain.x0, dtype=torch.float32))
         t1_s = torch.log1p(torch.tensor(props.domain.x1, dtype=torch.float32))
         t_s = torch.rand((hp.collocations, 1)) * (t1_s - t0_s) + t0_s
-        self.t = torch.expm1(t_s)
+        t = torch.expm1(t_s)
+
+        # transforming
+        self.t = transformer.transform_domain(t)
 
     @override
     def __getitem__(self, idx: int) -> Tensor:
@@ -405,16 +419,23 @@ class SIRInvDataModule(PINNDataModule):
         super().__init__()
         self.props = props
         self.hp = hp
-        self.transformer = transformer
+        self.transformer = transformer or Transformer()
 
     @override
     def setup(self, stage: str | None = None) -> None:
-        self.data_ds = SIRInvDataset(self.props)
-        self.coll_ds = SIRInvCollocationset(self.props, self.hp)
+        self.data_ds = SIRInvDataset(
+            self.props,
+            self.hp,
+            self.transformer,
+        )
+        self.coll_ds = SIRInvCollocationset(
+            self.props,
+            self.hp,
+            self.transformer,
+        )
         self.pinn_ds = PINNDataset(
             data_ds=self.data_ds,
             coll_ds=self.coll_ds,
             batch_size=self.hp.batch_size,
             data_ratio=self.hp.data_ratio,
-            transformer=self.transformer,
         )

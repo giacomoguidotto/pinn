@@ -1,6 +1,7 @@
 # src/pinn/train_sir_inverse.py
 from __future__ import annotations
 
+import argparse
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,17 +50,18 @@ class SIRInvTrainConfig:
     csv_dir: Path
     saved_models_dir: Path
     predictions_dir: Path
+    checkpoint_dir: Path
     experiment_name: str = ""  # empty string defaults to no experiments
 
 
-def train_sir_inverse(
-    props: SIRInvProperties, hp: SIRInvHyperparameters, config: SIRInvTrainConfig
+def execute(
+    props: SIRInvProperties,
+    hp: SIRInvHyperparameters,
+    config: SIRInvTrainConfig,
+    predict: bool = False,
 ) -> None:
-    # prepare
     model_path = config.saved_models_dir / f"{config.run_name}.ckpt"
-
-    temp_dir = create_dir(Path("./temp"))
-    clean_dir(temp_dir)
+    clean_dir(config.checkpoint_dir)
     clean_dir(config.tensorboard_dir / config.experiment_name / config.run_name)
 
     transformer = SIRInvTransformer(props)
@@ -76,10 +78,16 @@ def train_sir_inverse(
         transformer=transformer,
     )
 
-    module = PINNModule(
-        problem=problem,
-        hp=hp,
-    )
+    if predict:
+        module = PINNModule.load_from_checkpoint(
+            model_path,
+            problem=problem,
+        )
+    else:
+        module = PINNModule(
+            problem=problem,
+            hp=hp,
+        )
 
     loggers = [
         TensorBoardLogger(
@@ -108,7 +116,7 @@ def train_sir_inverse(
 
     callbacks = [
         ModelCheckpoint(
-            dirpath=temp_dir,
+            dirpath=config.checkpoint_dir,
             filename="{epoch:02d}",
             monitor=LOSS_KEY,
             mode="min",
@@ -144,17 +152,13 @@ def train_sir_inverse(
         log_every_n_steps=0,
     )
 
-    # train
-    trainer.fit(module, dm)
+    if predict:
+        trainer.predict(module, dm)
+    else:
+        trainer.fit(module, dm)
+        trainer.save_checkpoint(model_path)
 
-    # save
-    trainer.save_checkpoint(model_path)
-
-    # predict
-    trainer.predict(module, dm)
-
-    # clean up
-    clean_dir(temp_dir)
+    clean_dir(config.checkpoint_dir)
 
 
 def plot_predictions(predictions: dict[str, Tensor]) -> Figure:
@@ -183,7 +187,15 @@ def plot_predictions(predictions: dict[str, Tensor]) -> Figure:
 
 
 if __name__ == "__main__":
-    run_name = "v5"
+    parser = argparse.ArgumentParser(description="SIR Inverse Example")
+    parser.add_argument(
+        "--predict",
+        action="store_true",
+        help="Load saved model and run prediction. Does not train the model.",
+    )
+    args = parser.parse_args()
+
+    run_name = "v7"
 
     results_dir = Path("./results")
 
@@ -194,10 +206,13 @@ if __name__ == "__main__":
     models_dir = results_dir / "models" / run_name
     predictions_dir = models_dir / "predictions"
 
+    temp_dir = Path("./temp")
+
     create_dir(results_dir)
     create_dir(models_dir)
     create_dir(predictions_dir)
     create_dir(log_dir)
+    create_dir(temp_dir)
 
     config = SIRInvTrainConfig(
         run_name=run_name,
@@ -205,6 +220,7 @@ if __name__ == "__main__":
         csv_dir=csv_dir,
         saved_models_dir=models_dir,
         predictions_dir=predictions_dir,
+        checkpoint_dir=temp_dir,
     )
 
     props = SIRInvProperties()
@@ -224,4 +240,4 @@ if __name__ == "__main__":
         ),
     )
 
-    train_sir_inverse(props, hp, config)
+    execute(props, hp, config, args.predict)
