@@ -9,7 +9,6 @@ from torchdiffeq import odeint
 
 from pinn.core import Argument, DataBatch
 
-# ODECallable = Callable[..., Tensor]
 ODECallable = Callable[[Tensor, Tensor, list[Argument]], Tensor]
 """
 ODE function signature:
@@ -25,14 +24,13 @@ class Domain1D:
 
     x0: float
     x1: float
-    dx: float = 1.0
+    dx: float
 
 
 @dataclass
 class ODEProperties:
     ode: ODECallable
     domain: Domain1D
-    # args: tuple[Any, ...]
     args: list[Argument]
     Y0: list[float]
 

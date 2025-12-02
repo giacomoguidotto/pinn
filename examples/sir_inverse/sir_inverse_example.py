@@ -13,6 +13,7 @@ from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
+import pandas as pd
 import seaborn as sns
 from torch import Tensor
 
@@ -108,6 +109,8 @@ def execute(
         predictions: dict[str, Tensor],
         _batch_indices: Sequence[Any],
     ) -> None:
+        save_predictions(predictions, config.predictions_dir / "predictions.csv")
+
         fig = plot_predictions(predictions)
 
         plt.savefig(config.predictions_dir / "predictions.png", dpi=300)
@@ -186,6 +189,25 @@ def plot_predictions(predictions: dict[str, Tensor]) -> Figure:
     return fig
 
 
+def save_predictions(predictions: dict[str, Tensor], predictions_file: Path) -> None:
+    t_data = predictions["x_data"].squeeze()
+    I_data = predictions["y_data"].squeeze()
+    S_pred = predictions["S"].squeeze()
+    I_pred = predictions["I"].squeeze()
+    R_pred = props.N - S_pred - I_pred
+
+    df = pd.DataFrame(
+        {
+            "t": t_data,
+            "I_observed": I_data,
+            "S_pred": S_pred,
+            "I_pred": I_pred,
+            "R_pred": R_pred,
+        }
+    )
+    df.to_csv(predictions_file, index=False, float_format="%.6e")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SIR Inverse Example")
     parser.add_argument(
@@ -195,7 +217,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    run_name = "v7"
+    run_name = "v10"
 
     results_dir = Path("./results")
 
@@ -225,6 +247,7 @@ if __name__ == "__main__":
 
     props = SIRInvProperties()
     hp = SIRInvHyperparameters(
+        data_file=Path("./data/generated_data.csv"),
         smma_stopping=SMMAStoppingConfig(
             window=50,
             threshold=0.1,

@@ -165,6 +165,11 @@ class Parameter(nn.Module, Argument):
             self.apply(self._init)
 
     @property
+    @override
+    def name(self) -> str:
+        return self._name
+
+    @property
     def mode(self) -> Literal["scalar", "mlp"]:
         return self._mode
 
@@ -181,23 +186,6 @@ class Parameter(nn.Module, Argument):
         else:
             assert x is not None, "Function-valued parameter requires input"
             return self.net(x)  # type: ignore
-
-
-# TODO: consider if merging Operator and Constraint into a single protocol is smart.
-class Operator(Protocol):
-    """
-
-    Builds residuals given fields and parameters.
-    Returns dict of name->Loss residuals evaluated at provided batch.
-    """
-
-    def residuals(
-        self,
-        x_coll: Tensor,
-        criterion: nn.Module,
-        transformer: Transformer,
-        log: LogFn | None = None,
-    ) -> Tensor: ...
 
 
 class Constraint(Protocol):
@@ -222,7 +210,6 @@ class Problem(nn.Module):
 
     def __init__(
         self,
-        operator: Operator,
         constraints: list[Constraint],
         criterion: nn.Module,
         fields: list[Field],
@@ -230,7 +217,6 @@ class Problem(nn.Module):
         transformer: Transformer | None = None,
     ):
         super().__init__()
-        self.operator = operator
         self.constraints = constraints
         self.criterion = criterion
 
@@ -242,10 +228,7 @@ class Problem(nn.Module):
         self.transformer = transformer or Transformer()
 
     def total_loss(self, batch: PINNBatch, log: LogFn | None = None) -> Tensor:
-        _, x_coll = batch
-
-        total = self.operator.residuals(x_coll, self.criterion, self.transformer, log)
-
+        total = torch.tensor(0.0, device=batch[1].device)
         for c in self.constraints:
             total = total + c.loss(batch, self.criterion, self.transformer, log)
 

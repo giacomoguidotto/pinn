@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 import math
+from pathlib import Path
 from typing import override
 
+import pandas as pd
 import torch
 from torch import Tensor
 import torch.nn as nn
 from torch.utils.data import Dataset
+from torchdiffeq import odeint
 
 from pinn.core import (
     Argument,
@@ -16,7 +19,6 @@ from pinn.core import (
     Field,
     LogFn,
     MLPConfig,
-    Operator,
     Parameter,
     PINNBatch,
     PINNDataModule,
@@ -27,7 +29,7 @@ from pinn.core import (
 )
 from pinn.lib.utils import get_arg_or_raise
 from pinn.lightning import PINNHyperparameters, SchedulerConfig
-from pinn.problems.ode import Domain1D, ODECallable, ODEDataset, ODEProperties
+from pinn.problems.ode import Domain1D, ODECallable, ODEProperties
 
 BETA_KEY = "params/beta"
 DELTA_KEY = "args/delta"
@@ -49,6 +51,37 @@ def SIR(x: Tensor, y: Tensor, args: list[Argument]) -> Tensor:
 # TODO: should this return a tensor?
 def beta_fn(x: Tensor) -> float:
     return 0.6 * (1 + torch.sin(x * 2 * math.pi / 90.0)).item()
+
+
+@dataclass
+class SIRInvProperties(ODEProperties):
+    ode: ODECallable = field(default_factory=lambda: SIR)
+    domain: Domain1D = field(
+        default_factory=lambda: Domain1D(
+            x0=0.0,
+            x1=90.0,
+            dx=1.0,
+        )
+    )
+
+    N: float = 56e6
+    delta: float = 1 / 5
+    # beta: float = delta * 3.0
+    args: list[Argument] = field(default_factory=list)
+
+    I0: float = 1.0
+    Y0: list[float] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.args = [
+            Argument(self.delta, name=DELTA_KEY),
+            Argument(beta_fn, name=BETA_KEY),
+            # Argument(self.beta, name=BETA_KEY),
+            Argument(self.N, name=N_KEY),
+        ]
+
+        S0 = self.N - self.I0
+        self.Y0 = [S0, self.I0]
 
 
 @dataclass
@@ -89,35 +122,7 @@ class SIRInvHyperparameters(PINNHyperparameters):
     ic_weight: float = 1
     data_weight: float = 1
     beta_smoothness_weight: float = 0.0
-
-
-@dataclass
-class SIRInvProperties(ODEProperties):
-    ode: ODECallable = field(default_factory=lambda: SIR)
-    domain: Domain1D = field(
-        default_factory=lambda: Domain1D(
-            x0=0.0,
-            x1=90.0,
-        )
-    )
-
-    N: float = 56e6
-    delta: float = 1 / 5
-    beta: float = delta * 3.0
-    args: list[Argument] = field(default_factory=list)
-
-    I0: float = 1.0
-    Y0: list[float] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        self.args = [
-            Argument(self.delta, name=DELTA_KEY),
-            Argument(self.beta, name=BETA_KEY),
-            Argument(self.N, name=N_KEY),
-        ]
-
-        S0 = self.N - self.I0
-        self.Y0 = [S0, self.I0]
+    data_file: Path | None = None
 
 
 class SIRInvTransformer(Transformer):
@@ -126,11 +131,13 @@ class SIRInvTransformer(Transformer):
 
     @override
     def transform_domain(self, domain: Tensor) -> Tensor:
-        return domain / (self.props.domain.x1 - self.props.domain.x0)
+        x0, x1 = self.props.domain.x0, self.props.domain.x1
+        return (domain - x0) / (x1 - x0)
 
     @override
     def inverse_domain(self, domain: Tensor) -> Tensor:
-        return domain * (self.props.domain.x1 - self.props.domain.x0)
+        x0, x1 = self.props.domain.x0, self.props.domain.x1
+        return domain * (x1 - x0) + x0
 
     @override
     def transform_values(self, data: Tensor) -> Tensor:
@@ -141,7 +148,7 @@ class SIRInvTransformer(Transformer):
         return data * self.props.N
 
 
-class SIRInvOperator(Operator):
+class ResidualsConstraint(Constraint):
     def __init__(
         self,
         field_S: Field,
@@ -161,13 +168,14 @@ class SIRInvOperator(Operator):
         self.weight = weight
 
     @override
-    def residuals(
+    def loss(
         self,
-        t_coll: Tensor,
+        batch: PINNBatch,
         criterion: nn.Module,
         transformer: Transformer,
         log: LogFn | None = None,
     ) -> Tensor:
+        _, t_coll = batch
         t_coll = t_coll.requires_grad_(True)
 
         S = self.S(t_coll)
@@ -322,15 +330,14 @@ class SIRInvProblem(Problem):
         I_field = Field(config=replace(hp.fields_config, name="I"))
         beta = Parameter(config=hp.beta_config)
 
-        operator = SIRInvOperator(
-            field_S=S_field,
-            field_I=I_field,
-            weight=hp.pde_weight,
-            props=props,
-            params=[beta],
-        )
-
         constraints: list[Constraint] = [
+            ResidualsConstraint(
+                field_S=S_field,
+                field_I=I_field,
+                weight=hp.pde_weight,
+                props=props,
+                params=[beta],
+            ),
             ICConstraint(
                 field_S=S_field,
                 field_I=I_field,
@@ -350,7 +357,6 @@ class SIRInvProblem(Problem):
         criterion = nn.MSELoss()
 
         super().__init__(
-            operator=operator,
             constraints=constraints,
             criterion=criterion,
             fields=[S_field, I_field],
@@ -359,29 +365,65 @@ class SIRInvProblem(Problem):
         )
 
 
-class SIRInvDataset(ODEDataset):
+class SIRInvDataset(Dataset[DataBatch]):
     def __init__(
         self,
         props: SIRInvProperties,
         hp: SIRInvHyperparameters,
         transformer: Transformer,
     ):
-        # SIR components are generated in self.data
-        super().__init__(props)
-        I = self.data[:, 1].clamp_min(0.0)
+        self.hp = hp
+        self.props = props
+        self.transformer = transformer
 
-        # noising I
-        obs = torch.poisson(I / hp.data_noise_level) * hp.data_noise_level
+        self.x, self.obs = (
+            self.load_data(hp.data_file) if hp.data_file is not None else self.gen_data()
+        )
 
         # transforming
-        self.x = transformer.transform_domain(self.x.unsqueeze(-1))
-        self.obs = transformer.transform_values(obs.unsqueeze(-1))
+        self.x = transformer.transform_domain(self.x)
+        self.obs = transformer.transform_values(self.obs)
+
+    def gen_data(self) -> tuple[Tensor, Tensor]:
+        x0, x1, dx = self.props.domain.x0, self.props.domain.x1, self.props.domain.dx
+        steps = int((x1 - x0) / dx) + 1
+        x = torch.linspace(x0, x1, steps)
+
+        y0 = torch.tensor(self.props.Y0, dtype=torch.float32)
+
+        data = odeint(
+            lambda x, y: self.props.ode(x, y, self.props.args),
+            y0,
+            x,
+        )
+
+        # FIXME: problem specific logic, need to generalize
+        I = data[:, 1].clamp_min(0.0)
+        obs = torch.poisson(I / self.hp.data_noise_level) * self.hp.data_noise_level
+
+        return x.unsqueeze(-1), obs.unsqueeze(-1)
+
+    def load_data(self, data_file: Path) -> tuple[Tensor, Tensor]:
+        df = pd.read_csv(data_file)
+
+        # FIXME: hardcoded problem specific columns, need to generalize
+        if not {"t", "I_obs"}.issubset(df.columns):
+            raise ValueError("Data file must contain explicitly named 't' and 'I_obs' columns")
+
+        x = torch.tensor(df["t"].values, dtype=torch.float32)
+        obs = torch.tensor(df["I_obs"].values, dtype=torch.float32)
+
+        # transforming x to the problem domain
+        x_min, x_max = x.min(), x.max()
+        x = (x - x_min) / (x_max - x_min)
+        x = self.transformer.inverse_domain(x)
+
+        return x.unsqueeze(-1), obs.unsqueeze(-1)
 
     @override
     def __getitem__(self, idx: int) -> DataBatch:
         return (self.x[idx], self.obs[idx])
 
-    @override
     def __len__(self) -> int:
         return self.obs.shape[0]
 
