@@ -133,8 +133,6 @@ class PINNDataModule(pl.LightningDataModule):
         self.coll_ds: Dataset[Tensor]
         self.pinn_ds: PINNDataset
 
-        # TODO: prepare data with either loading CSV or generating synthetic data
-
     @override
     def train_dataloader(self) -> DataLoader[PINNBatch]:
         assert self.pinn_ds is not None

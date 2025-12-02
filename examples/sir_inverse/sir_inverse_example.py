@@ -39,7 +39,7 @@ def format_progress_bar(key: str, value: Metric) -> Metric:
     if key == LOSS_KEY:
         return f"{value:.2e}"
     elif key == BETA_KEY:
-        return f"{value:.5f} -> {props.beta:.5f}"
+        return f"{value:.5f}"
 
     return value
 
@@ -217,7 +217,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    run_name = "v10"
+    run_name = "v13"
 
     results_dir = Path("./results")
 

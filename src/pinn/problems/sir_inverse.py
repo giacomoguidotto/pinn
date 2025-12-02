@@ -151,19 +151,22 @@ class SIRInvTransformer(Transformer):
 class ResidualsConstraint(Constraint):
     def __init__(
         self,
-        field_S: Field,
-        field_I: Field,
+        props: ODEProperties,
+        fields: list[Field],
         params: list[Parameter],
-        props: SIRInvProperties,
         weight: float,
     ):
-        self.SIR = props.ode
-        self.S = field_S
-        self.I = field_I
+        self.ode = props.ode
+        self.fields = fields
 
         params_names = [p.name for p in params]
         self.args = [a for a in props.args if a.name not in params_names]
         self.args.extend(params)
+
+        # TODO: remove workaround for N
+        for a in self.args:
+            if a.name == N_KEY:
+                a._value = 1.0
 
         self.weight = weight
 
@@ -178,35 +181,71 @@ class ResidualsConstraint(Constraint):
         _, t_coll = batch
         t_coll = t_coll.requires_grad_(True)
 
-        S = self.S(t_coll)
-        I = self.I(t_coll)
-        y = torch.stack([S, I])
+        preds = [f(t_coll) for f in self.fields]
+        y = torch.stack(preds)
 
-        # TODO: remove workaround for N
-        for a in self.args:
-            if a.name == N_KEY:
-                a._value = 1.0
+        dy_dt_pred = self.ode(t_coll, y, self.args)
 
-        dy = self.SIR(t_coll, y, self.args)
-        dS_pred, dI_pred = dy
+        dy_dt_list = []
+        for pred in preds:
+            grad = torch.autograd.grad(pred, t_coll, torch.ones_like(pred), create_graph=True)[0]
+            grad = transformer.transform_domain(grad)
+            dy_dt_list.append(grad)
 
-        dS = torch.autograd.grad(S, t_coll, torch.ones_like(S), create_graph=True)[0]
-        dI = torch.autograd.grad(I, t_coll, torch.ones_like(I), create_graph=True)[0]
+        dy_dt = torch.stack(dy_dt_list)
 
-        dS = transformer.transform_domain(dS)
-        dI = transformer.transform_domain(dI)
+        residuals = dy_dt - dy_dt_pred
 
-        S_res: Tensor = dS - dS_pred
-        I_res: Tensor = dI - dI_pred
-
-        S_loss: Tensor = criterion(S_res, torch.zeros_like(S_res))
-        I_loss: Tensor = criterion(I_res, torch.zeros_like(I_res))
-        loss = self.weight * (S_loss + I_loss)
+        loss = torch.tensor(0.0, device=t_coll.device)
+        for res in residuals:
+            loss = loss + criterion(res, torch.zeros_like(res))
+        loss = self.weight * loss
 
         if log is not None:
+            for f in self.fields:
+                log(f"loss/res/{f.name}", loss)
             log("loss/res", loss)
-            log("loss/res/S", S_loss)
-            log("loss/res/I", I_loss)
+
+        return loss
+
+
+class ICConstraint(Constraint):
+    def __init__(
+        self,
+        fields: list[Field],
+        weight: float,
+        props: SIRInvProperties,
+    ):
+        self.Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
+        self.t0 = torch.tensor(props.domain.x0, dtype=torch.float32).reshape(1, 1)
+
+        self.fields = fields
+        self.weight = weight
+
+    @override
+    def loss(
+        self,
+        batch: PINNBatch,
+        criterion: nn.Module,
+        transformer: Transformer,
+        log: LogFn | None = None,
+    ) -> Tensor:
+        device = batch[1].device
+
+        t0 = transformer.transform_domain(self.t0.to(device))
+        Y0 = transformer.transform_values(self.Y0.to(device))
+
+        Y0_preds = [f(t0) for f in self.fields]
+
+        loss = torch.tensor(0.0, device=device)
+        for y0_target, y0_pred in zip(Y0, Y0_preds, strict=False):
+            loss = loss + criterion(y0_pred, y0_target)
+        loss = self.weight * loss
+
+        if log is not None:
+            for f in self.fields:
+                log(f"loss/ic/{f.name}0", loss)
+            log("loss/ic", loss)
 
         return loss
 
@@ -241,84 +280,6 @@ class DataConstraint(Constraint):
         return loss
 
 
-class ICConstraint(Constraint):
-    def __init__(
-        self,
-        field_S: Field,
-        field_I: Field,
-        weight: float,
-        props: SIRInvProperties,
-    ):
-        self.Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
-        self.t0 = torch.tensor(props.domain.x0, dtype=torch.float32).reshape(1, 1)
-
-        self.S = field_S
-        self.I = field_I
-        self.weight = weight
-
-    @override
-    def loss(
-        self,
-        batch: PINNBatch,
-        criterion: nn.Module,
-        transformer: Transformer,
-        log: LogFn | None = None,
-    ) -> Tensor:
-        device = batch[1].device
-
-        t0 = transformer.transform_domain(self.t0.to(device))
-        S0, I0 = transformer.transform_values(self.Y0.to(device))
-
-        S0_pred = self.S(t0)
-        I0_pred = self.I(t0)
-
-        S0_loss: Tensor = criterion(S0_pred, S0)
-        I0_loss: Tensor = criterion(I0_pred, I0)
-
-        loss = self.weight * (S0_loss + I0_loss)
-
-        if log is not None:
-            log("loss/ic", loss)
-            log("loss/ic/S0", S0_loss)
-            log("loss/ic/I0", I0_loss)
-
-        return loss
-
-
-class BetaSmoothness(Constraint):
-    """
-    Regularizer: penalize beta'(t)^2 for smoothness.
-    """
-
-    def __init__(
-        self,
-        beta: Parameter,
-        weight: float,
-    ):
-        self.beta = beta
-        self.weight = weight
-
-    @override
-    def loss(
-        self,
-        batch: PINNBatch,
-        criterion: nn.Module,
-        transformer: Transformer,
-        log: LogFn | None = None,
-    ) -> Tensor:
-        _, t_colloc = batch
-
-        t = t_colloc.requires_grad_(True)
-        b = self.beta(t)
-        db = torch.autograd.grad(b, t, torch.ones_like(b), create_graph=True)[0]
-
-        loss: Tensor = criterion(db)
-        if log is not None:
-            log("loss/reg/beta_smooth", loss)
-
-        return self.weight * loss
-
-
 class SIRInvProblem(Problem):
     def __init__(
         self,
@@ -332,15 +293,13 @@ class SIRInvProblem(Problem):
 
         constraints: list[Constraint] = [
             ResidualsConstraint(
-                field_S=S_field,
-                field_I=I_field,
+                fields=[S_field, I_field],
                 weight=hp.pde_weight,
                 props=props,
                 params=[beta],
             ),
             ICConstraint(
-                field_S=S_field,
-                field_I=I_field,
+                fields=[S_field, I_field],
                 weight=hp.ic_weight,
                 props=props,
             ),
@@ -348,10 +307,6 @@ class SIRInvProblem(Problem):
                 field_I=I_field,
                 weight=hp.data_weight,
             ),
-            # BetaSmoothness(
-            #     beta=beta,
-            #     weight=hp.beta_smoothness_weight,
-            # ),
         ]
 
         criterion = nn.MSELoss()

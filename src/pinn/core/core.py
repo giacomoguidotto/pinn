@@ -219,16 +219,18 @@ class Problem(nn.Module):
         super().__init__()
         self.constraints = constraints
         self.criterion = criterion
-
         self.fields = fields
         self.params = params
+
         self._fields = nn.ModuleList(fields)
         self._params = nn.ModuleList(params)
 
         self.transformer = transformer or Transformer()
 
     def total_loss(self, batch: PINNBatch, log: LogFn | None = None) -> Tensor:
-        total = torch.tensor(0.0, device=batch[1].device)
+        device = batch[1].device
+
+        total = torch.tensor(0.0, device=device)
         for c in self.constraints:
             total = total + c.loss(batch, self.criterion, self.transformer, log)
 
