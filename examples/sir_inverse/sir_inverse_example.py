@@ -15,14 +15,14 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+import torch
 from torch import Tensor
 
-from pinn.core import LOSS_KEY, MLPConfig
-from pinn.lib.utils import get_tensorboard_logger_or_raise
+from pinn.core import LOSS_KEY, MLPConfig, Scaler
 from pinn.lightning import PINNModule, SMMAStopping, SMMAStoppingConfig
 from pinn.lightning.callbacks import FormattedProgressBar, Metric, PredictionsWriter
 from pinn.problems import SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem, SIRInvProperties
-from pinn.problems.sir_inverse import BETA_KEY, SIRInvTransformer
+from pinn.problems.sir_inverse import BETA_KEY
 
 
 def create_dir(dir: Path) -> Path:
@@ -63,20 +63,23 @@ def execute(
 ) -> None:
     model_path = config.saved_models_dir / f"{config.run_name}.ckpt"
     clean_dir(config.checkpoint_dir)
-    clean_dir(config.tensorboard_dir / config.experiment_name / config.run_name)
+    if not predict:
+        clean_dir(config.tensorboard_dir / config.experiment_name / config.run_name)
 
-    transformer = SIRInvTransformer(props)
+    scaler = Scaler()
+    # TODO: maybe apply it in the dataset instead of the problem
+    scaler.fit(props.domain, torch.tensor([]), props.Y0)
 
     dm = SIRInvDataModule(
         props=props,
         hp=hp,
-        transformer=transformer,
+        scaler=scaler,
     )
 
     problem = SIRInvProblem(
         props=props,
         hp=hp,
-        transformer=transformer,
+        scaler=scaler,
     )
 
     if predict:
@@ -104,18 +107,13 @@ def execute(
     ]
 
     def on_prediction(
-        trainer: Trainer,
+        _trainer: Trainer,
         _module: LightningModule,
         predictions: dict[str, Tensor],
         _batch_indices: Sequence[Any],
     ) -> None:
-        save_predictions(predictions, config.predictions_dir / "predictions.csv")
-
-        fig = plot_predictions(predictions)
-
-        plt.savefig(config.predictions_dir / "predictions.png", dpi=300)
-        logger = get_tensorboard_logger_or_raise(trainer)
-        logger.experiment.add_figure("predictions", fig, global_step=trainer.global_step)
+        save_predictions(predictions, config.predictions_dir / "predictions.csv", props)
+        plot_predictions(predictions, config.predictions_dir / "predictions.png", props)
 
     callbacks = [
         ModelCheckpoint(
@@ -150,7 +148,7 @@ def execute(
     trainer = Trainer(
         max_epochs=hp.max_epochs,
         gradient_clip_val=hp.gradient_clip_val,
-        logger=loggers,
+        logger=loggers if not predict else [],
         callbacks=callbacks,
         log_every_n_steps=0,
     )
@@ -164,11 +162,13 @@ def execute(
     clean_dir(config.checkpoint_dir)
 
 
-def plot_predictions(predictions: dict[str, Tensor]) -> Figure:
-    t_data = predictions["x_data"].squeeze()
-    I_data = predictions["y_data"].squeeze()
-    S_pred = predictions["S"].squeeze()
-    I_pred = predictions["I"].squeeze()
+def plot_predictions(
+    predictions: dict[str, Tensor], predictions_file: Path, props: SIRInvProperties
+) -> Figure:
+    t_data = predictions["x_data"]
+    I_data = predictions["y_data"]
+    S_pred = predictions["S"]
+    I_pred = predictions["I"]
     R_pred = props.N - S_pred - I_pred
 
     sns.set_theme(style="darkgrid")
@@ -186,14 +186,17 @@ def plot_predictions(predictions: dict[str, Tensor]) -> Figure:
     plt.legend()
     plt.tight_layout()
 
+    fig.savefig(predictions_file, dpi=300)
     return fig
 
 
-def save_predictions(predictions: dict[str, Tensor], predictions_file: Path) -> None:
-    t_data = predictions["x_data"].squeeze()
-    I_data = predictions["y_data"].squeeze()
-    S_pred = predictions["S"].squeeze()
-    I_pred = predictions["I"].squeeze()
+def save_predictions(
+    predictions: dict[str, Tensor], predictions_file: Path, props: SIRInvProperties
+) -> pd.DataFrame:
+    t_data = predictions["x_data"]
+    I_data = predictions["y_data"]
+    S_pred = predictions["S"]
+    I_pred = predictions["I"]
     R_pred = props.N - S_pred - I_pred
 
     df = pd.DataFrame(
@@ -205,7 +208,9 @@ def save_predictions(predictions: dict[str, Tensor], predictions_file: Path) -> 
             "R_pred": R_pred,
         }
     )
+
     df.to_csv(predictions_file, index=False, float_format="%.6e")
+    return df
 
 
 if __name__ == "__main__":
@@ -217,7 +222,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    run_name = "v13"
+    run_name = "v15"
 
     results_dir = Path("./results")
 
@@ -247,13 +252,12 @@ if __name__ == "__main__":
 
     props = SIRInvProperties()
     hp = SIRInvHyperparameters(
-        data_file=Path("./data/generated_data.csv"),
         smma_stopping=SMMAStoppingConfig(
             window=50,
             threshold=0.1,
             lookback=50,
         ),
-        beta_config=MLPConfig(
+        param_config=MLPConfig(
             in_dim=1,
             out_dim=1,
             hidden_layers=[64, 64],
@@ -261,6 +265,11 @@ if __name__ == "__main__":
             output_activation="softplus",
             name=BETA_KEY,
         ),
+        # ingestion=IngestionConfig(
+        #     df_path=Path("./data/generated_data.csv"),
+        #     x_column="t",
+        #     y_columns=["I_obs"],
+        # ),
     )
 
     execute(props, hp, config, args.predict)

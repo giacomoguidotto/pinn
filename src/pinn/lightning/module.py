@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, cast, override
 
 import lightning.pytorch as pl
@@ -32,6 +33,12 @@ class SMMAStoppingConfig:
     threshold: float
     lookback: int
 
+@dataclass
+class IngestionConfig:
+    df_path: Path
+    x_column: str
+    y_columns: list[str]
+
 
 # TODO: consider further modularization of hyperparameters.
 @dataclass
@@ -45,6 +52,7 @@ class PINNHyperparameters:
     scheduler: SchedulerConfig | None = None
     early_stopping: EarlyStoppingConfig | None = None
     smma_stopping: SMMAStoppingConfig | None = None
+    ingestion: IngestionConfig | None = None
 
 
 class PINNModule(pl.LightningModule):

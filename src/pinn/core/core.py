@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol, override
+from typing import Literal, Protocol, cast, override
 
 import torch
 from torch import Tensor
 import torch.nn as nn
 
-from pinn.core.dataset import DataBatch, PINNBatch, Transformer
+from pinn.core.dataset import DataBatch, PINNBatch, Scaler
 
 Activations = Literal[
     "tanh",
@@ -109,7 +109,7 @@ class Field(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         if self.encode is not None:
             x = self.encode(x)
-        return self.net(x)  # type: ignore
+        return cast(Tensor, self.net(x))
 
 
 class Argument:
@@ -141,6 +141,7 @@ class Parameter(nn.Module, Argument):
         super().__init__()
         self._name = config.name
         self._mode: Literal["scalar", "mlp"]
+        self.scaler: Scaler | None = None
 
         if isinstance(config, ScalarConfig):
             self._mode = "scalar"
@@ -185,6 +186,8 @@ class Parameter(nn.Module, Argument):
             return self.value if x is None else self.value.expand_as(x)
         else:
             assert x is not None, "Function-valued parameter requires input"
+            if self.scaler is not None:
+                x = self.scaler.transform_domain(x)
             return self.net(x)  # type: ignore
 
 
@@ -198,7 +201,6 @@ class Constraint(Protocol):
         self,
         batch: PINNBatch,
         criterion: nn.Module,
-        transformer: Transformer,
         log: LogFn | None = None,
     ) -> Tensor: ...
 
@@ -214,7 +216,7 @@ class Problem(nn.Module):
         criterion: nn.Module,
         fields: list[Field],
         params: list[Parameter],
-        transformer: Transformer | None = None,
+        scaler: Scaler | None = None,
     ):
         super().__init__()
         self.constraints = constraints
@@ -225,14 +227,17 @@ class Problem(nn.Module):
         self._fields = nn.ModuleList(fields)
         self._params = nn.ModuleList(params)
 
-        self.transformer = transformer or Transformer()
+        if scaler is not None:
+            for param in self.params:
+                param.scaler = scaler
+        self.scaler = scaler or Scaler()
 
     def total_loss(self, batch: PINNBatch, log: LogFn | None = None) -> Tensor:
         device = batch[1].device
 
         total = torch.tensor(0.0, device=device)
         for c in self.constraints:
-            total = total + c.loss(batch, self.criterion, self.transformer, log)
+            total = total + c.loss(batch, self.criterion, log)
 
         if log is not None:
             for param in self.params:
@@ -245,14 +250,15 @@ class Problem(nn.Module):
         return total
 
     def predict(self, batch: DataBatch) -> dict[str, Tensor]:
+        # TODO: consider removing the batch from the results, as it is not formally a result
         x_data, y_data = batch
 
         results = {
-            "x_data": self.transformer.inverse_domain(x_data),
-            "y_data": self.transformer.inverse_values(y_data),
+            "x_data": self.scaler.inverse_domain(x_data).squeeze(-1),
+            "y_data": self.scaler.inverse_values(y_data).squeeze(-1),
         }
 
         for field in self.fields:
-            results[field.name] = self.transformer.inverse_values(field(x_data))
+            results[field.name] = self.scaler.inverse_values(field(x_data)).squeeze(-1)
 
         return results

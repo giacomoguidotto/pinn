@@ -1,10 +1,13 @@
 from collections.abc import Sized
-from typing import TypeAlias, cast, override
+from typing import TYPE_CHECKING, Any, TypeAlias, cast, override
 
 import lightning as pl
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
+
+if TYPE_CHECKING:
+    from pinn.problems.ode import ODECallable
 
 DataBatch: TypeAlias = tuple[Tensor, Tensor]
 
@@ -16,22 +19,57 @@ shape (collocations_size, 1) of collocation points over the domain.
 """
 
 
-class Transformer:
+class Scaler:
     """
-    Apply a transformation to a batch of data and collocations.
+    Apply a scaling to a batch of data and collocations.
     """
+
+    def __init__(self) -> None:
+        self.t_min = 0.0
+        self.t_max = 1.0
+        self.t_scale = 1.0
+        self.y_scale = 1.0
+
+    def fit(self, domain_info: Any, data: Tensor, Y0: list[float] | Tensor) -> None:
+        """
+        Infer scaling parameters from domain and data.
+
+        Args:
+            domain_info: Object with x0 and x1 attributes or similar
+            data: Observation data tensor
+            Y0: Initial conditions
+        """
+        # Time scaling
+        if hasattr(domain_info, "x0") and hasattr(domain_info, "x1"):
+            self.t_min = float(domain_info.x0)
+            self.t_max = float(domain_info.x1)
+        else:
+            # Fallback if domain_info is just bounds tuple or similar
+            pass
+
+        self.t_scale = self.t_max - self.t_min if self.t_max != self.t_min else 1.0
+
+        # Value scaling
+        # Uses max absolute value of data and Y0 for value scaling
+        y0_tensor = torch.tensor(Y0, dtype=torch.float32) if isinstance(Y0, list) else Y0
+
+        max_data = torch.max(torch.abs(data)) if data.numel() > 0 else torch.tensor(0.0)
+        max_y0 = torch.max(torch.abs(y0_tensor)) if y0_tensor.numel() > 0 else torch.tensor(0.0)
+
+        max_val = max(float(max_data), float(max_y0))
+        self.y_scale = max_val if max_val > 1e-8 else 1.0
 
     def transform_domain(self, domain: Tensor) -> Tensor:
-        return domain
+        return (domain - self.t_min) / self.t_scale
 
     def inverse_domain(self, domain: Tensor) -> Tensor:
-        return domain
+        return domain * self.t_scale + self.t_min
 
     def transform_values(self, values: Tensor) -> Tensor:
-        return values
+        return values / self.y_scale
 
     def inverse_values(self, values: Tensor) -> Tensor:
-        return values
+        return values * self.y_scale
 
     def transform_batch(self, batch: PINNBatch) -> PINNBatch:
         (x_data, y_data), x_coll = batch
@@ -41,6 +79,30 @@ class Transformer:
         x_coll = self.transform_domain(x_coll)
 
         return ((x_data, y_data), x_coll)
+
+    def scale_ode(self, physical_ode: "ODECallable") -> "ODECallable":
+        """
+        Wraps the user's ODE function (defined in physical units) to operate in the scaled domain.
+
+        dy_hat/dt_hat = (1/y_scale) * dy/dt * t_scale
+        """
+
+        def scaled_ode_fn(t_hat: Tensor, y_hat: Tensor, args: list[Any]) -> Tensor:
+            # Transform inputs back to physical domain
+            t = self.inverse_domain(t_hat)
+            y = self.inverse_values(y_hat)
+
+            # Compute physical derivatives
+            dy_dt = physical_ode(t, y, args)
+
+            # Transform derivatives to scaled domain
+            # dy_hat/dt_hat = dy/dt * (dt/dt_hat) * (dy_hat/dy)
+            # dt/dt_hat = t_scale
+            # dy_hat/dy = 1/y_scale
+
+            return dy_dt * (self.t_scale / self.y_scale)
+
+        return scaled_ode_fn
 
 
 class PINNDataset(Dataset[PINNBatch]):

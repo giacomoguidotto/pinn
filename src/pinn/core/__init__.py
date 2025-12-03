@@ -13,7 +13,7 @@ from pinn.core.core import (
     ScalarConfig,
     get_activation,
 )
-from pinn.core.dataset import DataBatch, PINNBatch, PINNDataModule, PINNDataset, Transformer
+from pinn.core.dataset import DataBatch, PINNBatch, PINNDataModule, PINNDataset, Scaler
 
 __all__ = [
     "LOSS_KEY",
@@ -30,6 +30,6 @@ __all__ = [
     "Parameter",
     "Problem",
     "ScalarConfig",
-    "Transformer",
+    "Scaler",
     "get_activation",
 ]

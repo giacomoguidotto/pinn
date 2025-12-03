@@ -3,9 +3,9 @@
 from pinn.problems.ode import Domain1D, ODECallable, ODEDataset, ODEProperties
 from pinn.problems.sir_inverse import (
     SIR,
+    ODEDataset,
     SIRInvCollocationset,
     SIRInvDataModule,
-    SIRInvDataset,
     SIRInvHyperparameters,
     SIRInvProblem,
     SIRInvProperties,
@@ -16,10 +16,10 @@ __all__ = [
     "Domain1D",
     "ODECallable",
     "ODEDataset",
+    "ODEDataset",
     "ODEProperties",
     "SIRInvCollocationset",
     "SIRInvDataModule",
-    "SIRInvDataset",
     "SIRInvHyperparameters",
     "SIRInvProblem",
     "SIRInvProperties",
