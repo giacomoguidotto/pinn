@@ -18,10 +18,11 @@ import seaborn as sns
 import torch
 from torch import Tensor
 
-from pinn.core import LOSS_KEY, MLPConfig, Scaler
+from pinn.core import LOSS_KEY, MLPConfig
 from pinn.lightning import PINNModule, SMMAStopping, SMMAStoppingConfig
 from pinn.lightning.callbacks import FormattedProgressBar, Metric, PredictionsWriter
 from pinn.problems import SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem, SIRInvProperties
+from pinn.problems.ode import LinearScaler
 from pinn.problems.sir_inverse import BETA_KEY
 
 
@@ -66,7 +67,7 @@ def execute(
     if not predict:
         clean_dir(config.tensorboard_dir / config.experiment_name / config.run_name)
 
-    scaler = Scaler()
+    scaler = LinearScaler()
     # TODO: maybe apply it in the dataset instead of the problem
     scaler.fit(props.domain, torch.tensor([]), props.Y0)
 
@@ -222,7 +223,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    run_name = "v15"
+    run_name = "v16"
 
     results_dir = Path("./results")
 

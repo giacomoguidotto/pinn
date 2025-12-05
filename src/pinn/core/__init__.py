@@ -11,9 +11,10 @@ from pinn.core.core import (
     Parameter,
     Problem,
     ScalarConfig,
+    Scaler,
     get_activation,
 )
-from pinn.core.dataset import DataBatch, PINNBatch, PINNDataModule, PINNDataset, Scaler
+from pinn.core.dataset import DataBatch, PINNBatch, PINNDataModule, PINNDataset
 
 __all__ = [
     "LOSS_KEY",

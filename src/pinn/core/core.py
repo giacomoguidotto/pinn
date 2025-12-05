@@ -8,7 +8,7 @@ import torch
 from torch import Tensor
 import torch.nn as nn
 
-from pinn.core.dataset import DataBatch, PINNBatch, Scaler
+from pinn.core.dataset import DataBatch, PINNBatch
 
 Activations = Literal[
     "tanh",
@@ -31,6 +31,10 @@ def get_activation(name: Activations) -> nn.Module:
         "softplus": nn.Softplus(),
         "identity": nn.Identity(),
     }[name]
+
+
+def identity(x: Tensor) -> Tensor:
+    return x
 
 
 class LogFn(Protocol):
@@ -191,6 +195,7 @@ class Parameter(nn.Module, Argument):
             return self.net(x)  # type: ignore
 
 
+
 class Constraint(Protocol):
     """
     Returns a named loss for the given batch.
@@ -230,7 +235,7 @@ class Problem(nn.Module):
         if scaler is not None:
             for param in self.params:
                 param.scaler = scaler
-        self.scaler = scaler or Scaler()
+        self.scaler = scaler
 
     def total_loss(self, batch: PINNBatch, log: LogFn | None = None) -> Tensor:
         device = batch[1].device
@@ -253,12 +258,24 @@ class Problem(nn.Module):
         # TODO: consider removing the batch from the results, as it is not formally a result
         x_data, y_data = batch
 
+        inverse_domain = self.scaler.inverse_domain if self.scaler is not None else identity
+        inverse_values = self.scaler.inverse_values if self.scaler is not None else identity
+
         results = {
-            "x_data": self.scaler.inverse_domain(x_data).squeeze(-1),
-            "y_data": self.scaler.inverse_values(y_data).squeeze(-1),
+            "x_data": inverse_domain(x_data).squeeze(-1),
+            "y_data": inverse_values(y_data).squeeze(-1),
         }
 
         for field in self.fields:
-            results[field.name] = self.scaler.inverse_values(field(x_data)).squeeze(-1)
+            results[field.name] = inverse_values(field(x_data)).squeeze(-1)
 
         return results
+
+class Scaler(Protocol):
+    def transform_domain(self, domain: Tensor) -> Tensor: ...
+
+    def inverse_domain(self, domain: Tensor) -> Tensor: ...
+
+    def transform_values(self, values: Tensor) -> Tensor: ...
+
+    def inverse_values(self, values: Tensor) -> Tensor: ...

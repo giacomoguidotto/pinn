@@ -37,6 +37,93 @@ class ODEProperties:
     args: list[Argument]
     Y0: list[float]
 
+class LinearScaler(Scaler):
+    """
+    Apply a linear scaling to a batch of data and collocations.
+    """
+
+    def __init__(
+        self,
+        x_min: float = 0.0,
+        x_max: float = 1.0,
+        y_scale: float = 1.0,
+    ) -> None:
+        self.x_min = x_min
+        self.x_max = x_max
+        self.x_scale = x_max - x_min if x_max != x_min else 1.0
+        self.y_scale = y_scale
+
+    def fit(self, domain: Domain1D, data: Tensor, Y0: list[float] | Tensor) -> None:
+        """
+        Infer scaling parameters from domain and data.
+
+        Args:
+            domain_info: Object with x0 and x1 attributes or similar
+            data: Observation data tensor
+            Y0: Initial conditions
+        """
+        self.x_min = domain.x0
+        self.x_max = domain.x1
+        self.x_scale = self.x_max - self.x_min if self.x_max != self.x_min else 1.0
+
+        y0_tensor = torch.tensor(Y0, dtype=torch.float32) if isinstance(Y0, list) else Y0
+
+        data_max = torch.max(torch.abs(data)) if data.numel() > 0 else torch.tensor(0.0)
+        Y0_max = torch.max(torch.abs(y0_tensor)) if y0_tensor.numel() > 0 else torch.tensor(0.0)
+
+        max = float(torch.max(data_max, Y0_max).item())
+        self.y_scale = max if max > 1e-8 else 1.0
+
+    def transform_domain(self, domain: Tensor) -> Tensor:
+        return (domain - self.x_min) / self.x_scale
+
+    def inverse_domain(self, domain: Tensor) -> Tensor:
+        return domain * self.x_scale + self.x_min
+
+    def transform_values(self, values: Tensor) -> Tensor:
+        return values / self.y_scale
+
+    def inverse_values(self, values: Tensor) -> Tensor:
+        return values * self.y_scale
+
+    def transform_batch(self, batch: PINNBatch) -> PINNBatch:
+        (x_data, y_data), x_coll = batch
+
+        x_data = self.transform_domain(x_data)
+        y_data = self.transform_values(y_data)
+        x_coll = self.transform_domain(x_coll)
+
+        return ((x_data, y_data), x_coll)
+
+    def scale_ode(self, ode: ODECallable) -> ODECallable:
+        """
+        Wraps the user's ODE function (defined in physical units) to operate in the scaled domain.
+
+        dy_s/dt_s = dy/dt * (dt/dt_s) * (dy_s/dy)
+        dt/dt_s = t_scale
+        dy_s/dy = 1/y_scale
+        dy_s/dt_s = (1/y_scale) * dy/dt * t_scale
+        """
+
+        def ode_s(t_s: Tensor, y_s: Tensor, args: list[Argument]) -> Tensor:
+            t = self.inverse_domain(t_s)
+            y = self.inverse_values(y_s)
+
+            dy_dt = ode(t, y, args)
+
+            return dy_dt * (self.x_scale / self.y_scale)
+
+        return ode_s
+
+    def scale_residual(self, residual: Tensor) -> Tensor:
+        """
+        Normalize residual by t_scale to match physical time derivative magnitude
+        """
+        if self.x_scale != 0:
+            residual = residual / self.x_scale
+        return residual
+
+
 class ResidualsConstraint(Constraint):
     def __init__(
         self,
@@ -78,11 +165,7 @@ class ResidualsConstraint(Constraint):
 
         dy_dt = torch.stack(dy_dt_list)
 
-        residuals = dy_dt - dy_dt_pred
-
-        # normalize residuals by t_scale to match physical time derivative magnitude
-        if self.scaler.t_scale != 0:
-            residuals = residuals / self.scaler.t_scale
+        residuals = self.scaler.scale_residual(dy_dt - dy_dt_pred)
 
         loss = torch.tensor(0.0, device=t_coll.device)
         for res in residuals:
