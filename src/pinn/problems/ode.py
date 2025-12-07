@@ -266,13 +266,6 @@ class ODEDataset(Dataset[DataBatch]):
             self.load_data(hp.ingestion) if hp.ingestion is not None else self.gen_data()
         )
 
-        # import matplotlib.pyplot as plt
-
-        # x = self.x.squeeze(-1).cpu().numpy()
-        # y = self.obs.squeeze(-1).cpu().numpy()
-        # plt.plot(x, y)
-        # plt.show()
-
     def gen_data(self) -> tuple[Tensor, Tensor]:
         x0, x1, dx = self.domain.x0, self.domain.x1, self.domain.dx
         steps = int((x1 - x0) / dx) + 1

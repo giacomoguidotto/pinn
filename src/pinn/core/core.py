@@ -67,7 +67,8 @@ class MLPConfig:
 
 @dataclass
 class ScalarConfig:
-    init_value: float = 0.1
+    init_value: float
+    true_value: float | None
     name: str = "p"
 
 
@@ -194,21 +195,20 @@ class Parameter(nn.Module, Argument):
             assert x is not None, "Function-valued parameter requires input"
             if self.scaler is not None:
                 x = self.scaler.transform_domain(x)
-            return self.net(x)  # type: ignore
+            return cast(Tensor, self.net(x))
 
-    def log(self, x_coll: Tensor) -> Tensor | None:
-        if self.mode == "scalar":
-            return self.value if x_coll is None else self.value.expand_as(x_coll)
+    def log_loss(self, x_coll: Tensor) -> Tensor | None:
+        if isinstance(self.config, ScalarConfig) and self.config.true_value is not None:
+            true = self.config.true_value
+            pred = self.value
+            return torch.abs(true - pred)
 
-        assert isinstance(self.config, MLPConfig)
-
-        if self.config.true_fn is not None:
+        elif isinstance(self.config, MLPConfig) and self.config.true_fn is not None:
             true = self.config.true_fn(x_coll)
             pred = self(x_coll)
-            return torch.norm(true - pred)  # type: ignore
+            return cast(Tensor, torch.norm(true - pred))
 
         return None
-
 
 # TODO: replace list[T] with registry
 ArgsRegistry = dict[str, Argument]
@@ -265,9 +265,9 @@ class Problem(nn.Module):
 
         if log is not None:
             for param in self.params:
-                val = param.log(x_coll)
-                if val is not None:
-                    log(f"params/{param.name}", val, progress_bar=True)
+                param_loss = param.log_loss(x_coll)
+                if param_loss is not None:
+                    log(f"loss/{param.name}", param_loss, progress_bar=True)
 
             log(LOSS_KEY, total, progress_bar=True)
 
@@ -292,7 +292,7 @@ class Problem(nn.Module):
         x_data = inverse_domain(x_data)
 
         for param in self.params:
-            results[param.name] = inverse_values(param(x_data)).squeeze(-1)
+            results[param.name] = param(x_data).squeeze(-1)
 
         return results
 

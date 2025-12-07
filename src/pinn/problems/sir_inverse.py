@@ -9,19 +9,9 @@ from torch import Tensor
 import torch.nn as nn
 from torch.utils.data import Dataset
 
-from pinn.core import (
-    Argument,
-    Constraint,
-    Field,
-    MLPConfig,
-    Parameter,
-    PINNDataModule,
-    PINNDataset,
-    Problem,
-    ScalarConfig,
-)
+from pinn.core import Argument, Constraint, Field, Parameter, PINNDataModule, PINNDataset, Problem
 from pinn.lib.utils import find_or_raise
-from pinn.lightning import IngestionConfig, PINNHyperparameters, SchedulerConfig
+from pinn.lightning import PINNHyperparameters
 from pinn.problems.ode import (
     DataConstraint,
     ICConstraint,
@@ -74,41 +64,10 @@ class SIRInvProperties(ODEProperties):
 
 @dataclass(kw_only=True)
 class SIRInvHyperparameters(PINNHyperparameters):
-    max_epochs: int = 1000
-    batch_size: int = 100
-    data_ratio: int | float = 2
-    data_noise_level: float = 1.0
-    collocations: int = 6000
-    lr: float = 5e-4
-    gradient_clip_val: float = 0.1
-    scheduler: SchedulerConfig | None = field(
-        default_factory=lambda: SchedulerConfig(
-            mode="min",
-            factor=0.5,
-            patience=55,
-            threshold=5e-3,
-            min_lr=1e-6,
-        )
-    )
-    fields_config: MLPConfig = field(
-        default_factory=lambda: MLPConfig(
-            in_dim=1,
-            out_dim=1,
-            hidden_layers=[64, 128, 128, 64],
-            activation="tanh",
-            output_activation="softplus",
-        )
-    )
-    param_config: MLPConfig | ScalarConfig = field(
-        default_factory=lambda: ScalarConfig(
-            init_value=0.5,
-        )
-    )
-    ingestion: IngestionConfig | None = None
     # TODO: implement adaptive weights
-    pde_weight: float = 100.0
-    ic_weight: float = 1
-    data_weight: float = 1
+    pde_weight: float
+    ic_weight: float
+    data_weight: float
 
 
 class SIRInvProblem(Problem):
@@ -120,7 +79,7 @@ class SIRInvProblem(Problem):
     ) -> None:
         S_field = Field(config=replace(hp.fields_config, name="S"))
         I_field = Field(config=replace(hp.fields_config, name="I"))
-        beta = Parameter(config=replace(hp.param_config, name=BETA_KEY))
+        beta = Parameter(config=replace(hp.params_config, name=BETA_KEY))
 
         def predict_data(t_data: Tensor, fields: list[Field]) -> Tensor:
             I = find_or_raise(fields, lambda f: f.name == "I")
@@ -165,7 +124,7 @@ class SIRInvDataset(ODEDataset):
         hp: SIRInvHyperparameters,
         scaler: LinearScaler,
     ):
-        self.data_noise_level = hp.data_noise_level
+        self.data_noise_level = hp.data.data_noise_level
         super().__init__(props, hp, scaler)
 
     @override
@@ -191,7 +150,7 @@ class SIRInvCollocationset(Dataset[Tensor]):
         scaler: LinearScaler,
     ):
         self.domain = props.domain
-        self.collocations = hp.collocations
+        self.collocations = hp.data.collocations
         t = self.gen_coll()
 
         self.t = scaler.transform_domain(t)
@@ -238,6 +197,6 @@ class SIRInvDataModule(PINNDataModule):
         self.pinn_ds = PINNDataset(
             data_ds=self.data_ds,
             coll_ds=self.coll_ds,
-            batch_size=self.hp.batch_size,
-            data_ratio=self.hp.data_ratio,
+            batch_size=self.hp.data.batch_size,
+            data_ratio=self.hp.data.data_ratio,
         )

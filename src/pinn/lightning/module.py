@@ -9,7 +9,7 @@ from lightning.pytorch.utilities.types import OptimizerLRScheduler
 import torch
 from torch import Tensor
 
-from pinn.core import LOSS_KEY, DataBatch, LogFn, PINNBatch, Problem
+from pinn.core import LOSS_KEY, DataBatch, LogFn, MLPConfig, PINNBatch, Problem, ScalarConfig
 
 
 @dataclass(kw_only=True)
@@ -41,15 +41,20 @@ class IngestionConfig:
     y_columns: list[str]
 
 
-# TODO: consider further modularization of hyperparameters.
 @dataclass(kw_only=True)
-class PINNHyperparameters:
-    max_epochs: int
+class DataConfig:
     batch_size: int
     data_ratio: int | float
+    data_noise_level: float
     collocations: int
+
+
+@dataclass(kw_only=True)
+class PINNHyperparameters:
     lr: float
-    gradient_clip_val: float
+    data: DataConfig
+    fields_config: MLPConfig
+    params_config: MLPConfig | ScalarConfig
     scheduler: SchedulerConfig | None = None
     early_stopping: EarlyStoppingConfig | None = None
     smma_stopping: SMMAStoppingConfig | None = None
@@ -81,7 +86,7 @@ class PINNModule(pl.LightningModule):
                 on_step=False,
                 on_epoch=True,
                 prog_bar=progress_bar,
-                batch_size=hp.batch_size,
+                batch_size=hp.data.batch_size,
             )
 
         self._log = cast(LogFn, _log)

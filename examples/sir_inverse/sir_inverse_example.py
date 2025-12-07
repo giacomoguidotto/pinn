@@ -19,8 +19,14 @@ import seaborn as sns
 import torch
 from torch import Tensor
 
-from pinn.core import LOSS_KEY, MLPConfig
-from pinn.lightning import PINNModule, SMMAStopping, SMMAStoppingConfig
+from pinn.core import LOSS_KEY, MLPConfig, ScalarConfig
+from pinn.lightning import (
+    DataConfig,
+    PINNModule,
+    SchedulerConfig,
+    SMMAStopping,
+    SMMAStoppingConfig,
+)
 from pinn.lightning.callbacks import FormattedProgressBar, Metric, PredictionsWriter
 from pinn.problems import (
     Domain1D,
@@ -44,10 +50,8 @@ def clean_dir(dir: Path) -> None:
 
 
 def format_progress_bar(key: str, value: Metric) -> Metric:
-    if key == LOSS_KEY:
+    if LOSS_KEY in key:
         return f"{value:.2e}"
-    elif key == BETA_KEY:
-        return f"{value:.5f}"
 
     return value
 
@@ -61,6 +65,8 @@ class SIRInvTrainConfig:
     predictions_dir: Path
     checkpoint_dir: Path
     experiment_name: str = ""  # empty string defaults to no experiments
+    max_epochs: int = 1000
+    gradient_clip_val: float = 0.1
 
 
 def beta_fn(x: Tensor) -> Tensor:
@@ -76,6 +82,7 @@ def execute(
     model_path = config.saved_models_dir / f"{config.run_name}.ckpt"
     clean_dir(config.checkpoint_dir)
     if not predict:
+        clean_dir(config.csv_dir / config.experiment_name / config.run_name)
         clean_dir(config.tensorboard_dir / config.experiment_name / config.run_name)
 
     scaler = LinearScaler(
@@ -160,8 +167,8 @@ def execute(
     ]
 
     trainer = Trainer(
-        max_epochs=hp.max_epochs,
-        gradient_clip_val=hp.gradient_clip_val,
+        max_epochs=config.max_epochs,
+        gradient_clip_val=config.gradient_clip_val,
         logger=loggers if not predict else [],
         callbacks=callbacks,
         log_every_n_steps=0,
@@ -209,6 +216,7 @@ def plot_predictions(
     sns.lineplot(x=t_data, y=beta_true, label=r"$\beta_{true}$", ax=axes[1])
     sns.lineplot(x=t_data, y=beta_pred, label=r"$\beta_{pred}$", linestyle="--", ax=axes[1])
 
+    axes[1].set_ylim(0, 1)
     axes[1].set_title(r"$\beta$ Parameter Prediction")
     axes[1].set_xlabel("Time (days)")
     axes[1].set_ylabel(r"$\beta$ Value")
@@ -260,7 +268,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    run_name = "v3"
+    run_name = "v4"
 
     results_dir = Path("./results")
 
@@ -296,29 +304,57 @@ if __name__ == "__main__":
         ),
         N=56e6,
         delta=1 / 5,
-        beta=beta_fn,
+        beta=0.6,
         I0=1.0,
     )
+
     hp = SIRInvHyperparameters(
+        lr=5e-4,
+        data=DataConfig(
+            batch_size=100,
+            data_ratio=2,
+            data_noise_level=1.0,
+            collocations=6000,
+        ),
+        fields_config=MLPConfig(
+            in_dim=1,
+            out_dim=1,
+            hidden_layers=[64, 128, 128, 64],
+            activation="tanh",
+            output_activation="softplus",
+        ),
+        params_config=ScalarConfig(
+            init_value=0.5,
+            true_value=0.6,
+        ),
+        # params_config=MLPConfig(
+        #     in_dim=1,
+        #     out_dim=1,
+        #     hidden_layers=[64, 64],
+        #     activation="tanh",
+        #     output_activation="softplus",
+        #     true_fn=beta_fn,
+        # ),
+        scheduler=SchedulerConfig(
+            mode="min",
+            factor=0.5,
+            patience=55,
+            threshold=5e-3,
+            min_lr=1e-6,
+        ),
         smma_stopping=SMMAStoppingConfig(
             window=50,
             threshold=0.1,
             lookback=50,
-        ),
-        param_config=MLPConfig(
-            in_dim=1,
-            out_dim=1,
-            hidden_layers=[64, 64],
-            activation="tanh",
-            output_activation="softplus",
-            true_fn=beta_fn,
-            name=BETA_KEY,
         ),
         # ingestion=IngestionConfig(
         #     df_path=Path("./data/generated_data.csv"),
         #     x_column="t",
         #     y_columns=["I_obs"],
         # ),
+        pde_weight=100.0,
+        ic_weight=1,
+        data_weight=1,
     )
 
     execute(props, hp, config, args.predict)
