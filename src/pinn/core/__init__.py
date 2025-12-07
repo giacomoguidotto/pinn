@@ -3,6 +3,7 @@
 from pinn.core.core import (
     LOSS_KEY,
     Activations,
+    ArgsRegistry,
     Argument,
     Constraint,
     Field,
@@ -19,6 +20,7 @@ from pinn.core.dataset import DataBatch, PINNBatch, PINNDataModule, PINNDataset
 __all__ = [
     "LOSS_KEY",
     "Activations",
+    "ArgsRegistry",
     "Argument",
     "Constraint",
     "DataBatch",

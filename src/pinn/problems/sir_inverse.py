@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 
 from pinn.core import Argument, Constraint, Field, Parameter, PINNDataModule, PINNDataset, Problem
-from pinn.lib.utils import find_or_raise
+from pinn.core.core import ArgsRegistry, FieldsRegistry
 from pinn.lightning import PINNHyperparameters
 from pinn.problems.ode import (
     DataConstraint,
@@ -22,16 +22,19 @@ from pinn.problems.ode import (
     ResidualsConstraint,
 )
 
+S_KEY = "S"
+I_KEY = "I"
 BETA_KEY = "beta"
 DELTA_KEY = "delta"
 N_KEY = "N"
 
 
-def SIR(x: Tensor, y: Tensor, args: list[Argument]) -> Tensor:
+def SIR(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
     S, I = y
-    b = find_or_raise(args, lambda a: a.name == BETA_KEY)
-    d = find_or_raise(args, lambda a: a.name == DELTA_KEY)
-    N = find_or_raise(args, lambda a: a.name == N_KEY)
+    # TODO: use reflection to automate this
+    b = args[BETA_KEY]
+    d = args[DELTA_KEY]
+    N = args[N_KEY]
 
     dS = -b(x) * S * I / N(x)
     dI = b(x) * S * I / N(x) - d(x) * I
@@ -48,15 +51,15 @@ class SIRInvProperties(ODEProperties):
     I0: float
 
     ode: ODECallable = field(default_factory=lambda: SIR)
-    args: list[Argument] = field(default_factory=list)
+    args: ArgsRegistry = field(default_factory=dict)
     Y0: list[float] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.args = [
-            Argument(self.delta, name=DELTA_KEY),
-            Argument(self.beta, name=BETA_KEY),
-            Argument(self.N, name=N_KEY),
-        ]
+        self.args = {
+            DELTA_KEY: Argument(self.delta, name=DELTA_KEY),
+            BETA_KEY: Argument(self.beta, name=BETA_KEY),
+            N_KEY: Argument(self.N, name=N_KEY),
+        }
 
         S0 = self.N - self.I0
         self.Y0 = [S0, self.I0]
@@ -77,12 +80,12 @@ class SIRInvProblem(Problem):
         hp: SIRInvHyperparameters,
         scaler: LinearScaler,
     ) -> None:
-        S_field = Field(config=replace(hp.fields_config, name="S"))
-        I_field = Field(config=replace(hp.fields_config, name="I"))
+        S_field = Field(config=replace(hp.fields_config, name=S_KEY))
+        I_field = Field(config=replace(hp.fields_config, name=I_KEY))
         beta = Parameter(config=replace(hp.params_config, name=BETA_KEY))
 
-        def predict_data(t_data: Tensor, fields: list[Field]) -> Tensor:
-            I = find_or_raise(fields, lambda f: f.name == "I")
+        def predict_data(t_data: Tensor, fields: FieldsRegistry) -> Tensor:
+            I = fields[I_KEY]
             return cast(Tensor, I(t_data))
 
         constraints: list[Constraint] = [

@@ -19,7 +19,7 @@ import seaborn as sns
 import torch
 from torch import Tensor
 
-from pinn.core import LOSS_KEY, MLPConfig, ScalarConfig
+from pinn.core import LOSS_KEY, MLPConfig
 from pinn.lightning import (
     DataConfig,
     PINNModule,
@@ -120,8 +120,8 @@ def execute(
         predictions: dict[str, Tensor],
         _batch_indices: Sequence[Any],
     ) -> None:
-        save_predictions(predictions, config.predictions_dir / "predictions.csv", props, scaler)
-        plot_predictions(predictions, config.predictions_dir / "predictions.png", props, scaler)
+        save_predictions(predictions, config.predictions_dir / "predictions.csv", props)
+        plot_predictions(predictions, config.predictions_dir / "predictions.png", props)
 
     callbacks = [
         ModelCheckpoint(
@@ -187,7 +187,6 @@ def plot_predictions(
     predictions: dict[str, Tensor],
     predictions_file: Path,
     props: SIRInvProperties,
-    scaler: LinearScaler,
 ) -> Figure:
     t_data = predictions["x_data"]
     I_data = predictions["y_data"]
@@ -196,7 +195,7 @@ def plot_predictions(
     R_pred = props.N - S_pred - I_pred
 
     beta_pred = predictions[BETA_KEY]
-    beta_true = scaler.inverse_values(beta_fn(t_data))
+    beta_true = beta_fn(t_data)
 
     sns.set_theme(style="darkgrid")
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
@@ -232,7 +231,6 @@ def save_predictions(
     predictions: dict[str, Tensor],
     predictions_file: Path,
     props: SIRInvProperties,
-    scaler: LinearScaler,
 ) -> pd.DataFrame:
     t_data = predictions["x_data"]
     I_data = predictions["y_data"]
@@ -240,7 +238,7 @@ def save_predictions(
     I_pred = predictions["I"]
     R_pred = props.N - S_pred - I_pred
 
-    beta_true = scaler.inverse_values(beta_fn(t_data))
+    beta_true = beta_fn(t_data)
     beta_pred = predictions[BETA_KEY]
 
     df = pd.DataFrame(
@@ -268,7 +266,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    run_name = "v4"
+    run_name = "v5"
 
     results_dir = Path("./results")
 
@@ -323,18 +321,18 @@ if __name__ == "__main__":
             activation="tanh",
             output_activation="softplus",
         ),
-        params_config=ScalarConfig(
-            init_value=0.5,
-            true_value=0.6,
-        ),
-        # params_config=MLPConfig(
-        #     in_dim=1,
-        #     out_dim=1,
-        #     hidden_layers=[64, 64],
-        #     activation="tanh",
-        #     output_activation="softplus",
-        #     true_fn=beta_fn,
+        # params_config=ScalarConfig(
+        #     init_value=0.5,
+        #     true_value=0.6,
         # ),
+        params_config=MLPConfig(
+            in_dim=1,
+            out_dim=1,
+            hidden_layers=[64, 64],
+            activation="tanh",
+            output_activation="softplus",
+            true_fn=beta_fn,
+        ),
         scheduler=SchedulerConfig(
             mode="min",
             factor=0.5,

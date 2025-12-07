@@ -9,13 +9,23 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 from torchdiffeq import odeint
 
-from pinn.core import Argument, Constraint, DataBatch, Field, LogFn, Parameter, PINNBatch, Scaler
+from pinn.core import (
+    ArgsRegistry,
+    Constraint,
+    DataBatch,
+    Field,
+    LogFn,
+    Parameter,
+    PINNBatch,
+    Scaler,
+)
+from pinn.core.core import FieldsRegistry
 from pinn.lightning import IngestionConfig, PINNHyperparameters
 
-ODECallable = Callable[[Tensor, Tensor, list[Argument]], Tensor]
+ODECallable = Callable[[Tensor, Tensor, ArgsRegistry], Tensor]
 """
 ODE function signature:
-    ode(x: Tensor, y: Tensor, args: list[Argument]) -> Tensor
+    ode(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor
 """
 
 
@@ -34,7 +44,7 @@ class Domain1D:
 class ODEProperties:
     ode: ODECallable
     domain: Domain1D
-    args: list[Argument]
+    args: ArgsRegistry
     Y0: list[float]
 
 
@@ -101,7 +111,7 @@ class LinearScaler(Scaler):
         dy_s/dt_s = (1/y_scale) * dy/dt * t_scale
         """
 
-        def ode_s(t_s: Tensor, y_s: Tensor, args: list[Argument]) -> Tensor:
+        def ode_s(t_s: Tensor, y_s: Tensor, args: ArgsRegistry) -> Tensor:
             t = self.inverse_domain(t_s)
             y = self.inverse_values(y_s)
 
@@ -133,9 +143,9 @@ class ResidualsConstraint(Constraint):
         self.fields = fields
         self.ode_s = self.scaler.scale_ode(props.ode)
 
-        params_names = [p.name for p in params]
-        self.args = [a for a in props.args if a.name not in params_names]
-        self.args.extend(params)
+        # override with the trainable params the same args
+        self.args = props.args.copy()
+        self.args.update({p.name: p for p in params})
 
         self.weight = weight
 
@@ -216,7 +226,7 @@ class ICConstraint(Constraint):
         return loss
 
 
-PredictDataFn: TypeAlias = Callable[[Tensor, list[Field]], Tensor]
+PredictDataFn: TypeAlias = Callable[[Tensor, FieldsRegistry], Tensor]
 
 
 class DataConstraint(Constraint):
@@ -226,7 +236,7 @@ class DataConstraint(Constraint):
         predict_data: PredictDataFn,
         weight: float,
     ):
-        self.fields = fields
+        self.fields: FieldsRegistry = {f.name: f for f in fields}
         self.predict_data = predict_data
         self.weight = weight
 

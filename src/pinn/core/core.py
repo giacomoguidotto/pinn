@@ -199,20 +199,21 @@ class Parameter(nn.Module, Argument):
 
     def log_loss(self, x_coll: Tensor) -> Tensor | None:
         if isinstance(self.config, ScalarConfig) and self.config.true_value is not None:
-            true = self.config.true_value
-            pred = self.value
-            return torch.abs(true - pred)
+            true_value = self.config.true_value
+            pred_value = self.value
+            return torch.abs(true_value - pred_value)
 
         elif isinstance(self.config, MLPConfig) and self.config.true_fn is not None:
-            true = self.config.true_fn(x_coll)
-            pred = self(x_coll)
-            return cast(Tensor, torch.norm(true - pred))
+            true_values = self.config.true_fn(x_coll)
+            pred_value = self(x_coll)
+            return cast(Tensor, torch.norm(true_values - pred_value))
 
         return None
 
-# TODO: replace list[T] with registry
+
 ArgsRegistry = dict[str, Argument]
 ParamsRegistry = dict[str, Parameter]
+FieldsRegistry = dict[str, Field]
 
 
 class Constraint(Protocol):
@@ -227,6 +228,16 @@ class Constraint(Protocol):
         criterion: nn.Module,
         log: LogFn | None = None,
     ) -> Tensor: ...
+
+
+class Scaler(Protocol):
+    def transform_domain(self, domain: Tensor) -> Tensor: ...
+
+    def inverse_domain(self, domain: Tensor) -> Tensor: ...
+
+    def transform_values(self, values: Tensor) -> Tensor: ...
+
+    def inverse_values(self, values: Tensor) -> Tensor: ...
 
 
 class Problem(nn.Module):
@@ -295,13 +306,3 @@ class Problem(nn.Module):
             results[param.name] = param(x_data).squeeze(-1)
 
         return results
-
-
-class Scaler(Protocol):
-    def transform_domain(self, domain: Tensor) -> Tensor: ...
-
-    def inverse_domain(self, domain: Tensor) -> Tensor: ...
-
-    def transform_values(self, values: Tensor) -> Tensor: ...
-
-    def inverse_values(self, values: Tensor) -> Tensor: ...
