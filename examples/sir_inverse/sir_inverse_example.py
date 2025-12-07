@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import shutil
 from typing import Any
@@ -21,7 +22,13 @@ from torch import Tensor
 from pinn.core import LOSS_KEY, MLPConfig
 from pinn.lightning import PINNModule, SMMAStopping, SMMAStoppingConfig
 from pinn.lightning.callbacks import FormattedProgressBar, Metric, PredictionsWriter
-from pinn.problems import SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem, SIRInvProperties
+from pinn.problems import (
+    Domain1D,
+    SIRInvDataModule,
+    SIRInvHyperparameters,
+    SIRInvProblem,
+    SIRInvProperties,
+)
 from pinn.problems.ode import LinearScaler
 from pinn.problems.sir_inverse import BETA_KEY
 
@@ -56,6 +63,10 @@ class SIRInvTrainConfig:
     experiment_name: str = ""  # empty string defaults to no experiments
 
 
+def beta_fn(x: Tensor) -> Tensor:
+    return 0.6 * (1 + torch.sin(x * 2 * math.pi / 90.0))
+
+
 def execute(
     props: SIRInvProperties,
     hp: SIRInvHyperparameters,
@@ -67,9 +78,11 @@ def execute(
     if not predict:
         clean_dir(config.tensorboard_dir / config.experiment_name / config.run_name)
 
-    scaler = LinearScaler()
-    # TODO: maybe apply it in the dataset instead of the problem
-    scaler.fit(props.domain, torch.tensor([]), props.Y0)
+    scaler = LinearScaler(
+        y_scale=props.N,
+        x_min=props.domain.x0,
+        x_max=props.domain.x1,
+    )
 
     dm = SIRInvDataModule(
         props=props,
@@ -94,27 +107,14 @@ def execute(
             hp=hp,
         )
 
-    loggers = [
-        TensorBoardLogger(
-            save_dir=config.tensorboard_dir,
-            name=config.experiment_name,
-            version=config.run_name,
-        ),
-        CSVLogger(
-            save_dir=config.csv_dir,
-            name=config.experiment_name,
-            version=config.run_name,
-        ),
-    ]
-
     def on_prediction(
         _trainer: Trainer,
         _module: LightningModule,
         predictions: dict[str, Tensor],
         _batch_indices: Sequence[Any],
     ) -> None:
-        save_predictions(predictions, config.predictions_dir / "predictions.csv", props)
-        plot_predictions(predictions, config.predictions_dir / "predictions.png", props)
+        save_predictions(predictions, config.predictions_dir / "predictions.csv", props, scaler)
+        plot_predictions(predictions, config.predictions_dir / "predictions.png", props, scaler)
 
     callbacks = [
         ModelCheckpoint(
@@ -146,6 +146,19 @@ def execute(
             ),
         )
 
+    loggers = [
+        TensorBoardLogger(
+            save_dir=config.tensorboard_dir,
+            name=config.experiment_name,
+            version=config.run_name,
+        ),
+        CSVLogger(
+            save_dir=config.csv_dir,
+            name=config.experiment_name,
+            version=config.run_name,
+        ),
+    ]
+
     trainer = Trainer(
         max_epochs=hp.max_epochs,
         gradient_clip_val=hp.gradient_clip_val,
@@ -164,7 +177,10 @@ def execute(
 
 
 def plot_predictions(
-    predictions: dict[str, Tensor], predictions_file: Path, props: SIRInvProperties
+    predictions: dict[str, Tensor],
+    predictions_file: Path,
+    props: SIRInvProperties,
+    scaler: LinearScaler,
 ) -> Figure:
     t_data = predictions["x_data"]
     I_data = predictions["y_data"]
@@ -172,19 +188,32 @@ def plot_predictions(
     I_pred = predictions["I"]
     R_pred = props.N - S_pred - I_pred
 
+    beta_pred = predictions[BETA_KEY]
+    beta_true = scaler.inverse_values(beta_fn(t_data))
+
     sns.set_theme(style="darkgrid")
-    fig = plt.figure(figsize=(12, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
-    sns.lineplot(x=t_data, y=S_pred, label="$S_{pred}$")
-    sns.lineplot(x=t_data, y=I_pred, label="$I_{pred}$")
-    sns.lineplot(x=t_data, y=R_pred, label="$R_{pred}$")
-    sns.lineplot(x=t_data, y=I_data, label="$I_{observed}$", linestyle="--")
+    # SIR Plot
+    sns.lineplot(x=t_data, y=S_pred, label="$S_{pred}$", ax=axes[0])
+    sns.lineplot(x=t_data, y=I_pred, label="$I_{pred}$", ax=axes[0])
+    sns.lineplot(x=t_data, y=R_pred, label="$R_{pred}$", ax=axes[0])
+    sns.lineplot(x=t_data, y=I_data, label="$I_{observed}$", linestyle="--", ax=axes[0])
 
-    plt.title("SIR Model Predictions")
-    plt.xlabel("Time (days)")
-    plt.ylabel("Fraction of Population")
+    axes[0].set_title("SIR Model Predictions")
+    axes[0].set_xlabel("Time (days)")
+    axes[0].set_ylabel("Fraction of Population")
+    axes[0].legend()
 
-    plt.legend()
+    # Beta Plot
+    sns.lineplot(x=t_data, y=beta_true, label=r"$\beta_{true}$", ax=axes[1])
+    sns.lineplot(x=t_data, y=beta_pred, label=r"$\beta_{pred}$", linestyle="--", ax=axes[1])
+
+    axes[1].set_title(r"$\beta$ Parameter Prediction")
+    axes[1].set_xlabel("Time (days)")
+    axes[1].set_ylabel(r"$\beta$ Value")
+    axes[1].legend()
+
     plt.tight_layout()
 
     fig.savefig(predictions_file, dpi=300)
@@ -192,13 +221,19 @@ def plot_predictions(
 
 
 def save_predictions(
-    predictions: dict[str, Tensor], predictions_file: Path, props: SIRInvProperties
+    predictions: dict[str, Tensor],
+    predictions_file: Path,
+    props: SIRInvProperties,
+    scaler: LinearScaler,
 ) -> pd.DataFrame:
     t_data = predictions["x_data"]
     I_data = predictions["y_data"]
     S_pred = predictions["S"]
     I_pred = predictions["I"]
     R_pred = props.N - S_pred - I_pred
+
+    beta_true = scaler.inverse_values(beta_fn(t_data))
+    beta_pred = predictions[BETA_KEY]
 
     df = pd.DataFrame(
         {
@@ -207,6 +242,8 @@ def save_predictions(
             "S_pred": S_pred,
             "I_pred": I_pred,
             "R_pred": R_pred,
+            "beta_pred": beta_pred,
+            "beta_true": beta_true,
         }
     )
 
@@ -223,7 +260,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    run_name = "v16"
+    run_name = "v3"
 
     results_dir = Path("./results")
 
@@ -251,7 +288,17 @@ if __name__ == "__main__":
         checkpoint_dir=temp_dir,
     )
 
-    props = SIRInvProperties()
+    props = SIRInvProperties(
+        domain=Domain1D(
+            x0=0.0,
+            x1=90.0,
+            dx=1.0,
+        ),
+        N=56e6,
+        delta=1 / 5,
+        beta=beta_fn,
+        I0=1.0,
+    )
     hp = SIRInvHyperparameters(
         smma_stopping=SMMAStoppingConfig(
             window=50,
@@ -264,6 +311,7 @@ if __name__ == "__main__":
             hidden_layers=[64, 64],
             activation="tanh",
             output_activation="softplus",
+            true_fn=beta_fn,
             name=BETA_KEY,
         ),
         # ingestion=IngestionConfig(

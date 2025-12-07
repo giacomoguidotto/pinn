@@ -12,7 +12,7 @@ from torch import Tensor
 from pinn.core import LOSS_KEY, DataBatch, LogFn, PINNBatch, Problem
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SchedulerConfig:
     mode: Literal["min", "max"]
     factor: float
@@ -21,19 +21,20 @@ class SchedulerConfig:
     min_lr: float
 
 
-@dataclass
+@dataclass(kw_only=True)
 class EarlyStoppingConfig:
     patience: int
     mode: Literal["min", "max"]
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SMMAStoppingConfig:
     window: int
     threshold: float
     lookback: int
 
-@dataclass
+
+@dataclass(kw_only=True)
 class IngestionConfig:
     df_path: Path
     x_column: str
@@ -41,7 +42,7 @@ class IngestionConfig:
 
 
 # TODO: consider further modularization of hyperparameters.
-@dataclass
+@dataclass(kw_only=True)
 class PINNHyperparameters:
     max_epochs: int
     batch_size: int

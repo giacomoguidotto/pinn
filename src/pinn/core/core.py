@@ -61,6 +61,7 @@ class MLPConfig:
     activation: Activations
     output_activation: Activations | None = None
     encode: Callable[[Tensor], Tensor] | None = None
+    true_fn: Callable[[Tensor], Tensor] | None = None  # for logging
     name: str = "u"
 
 
@@ -117,7 +118,7 @@ class Field(nn.Module):
 
 
 class Argument:
-    def __init__(self, value: float | Callable[[Tensor], float], name: str):
+    def __init__(self, value: float | Callable[[Tensor], Tensor], name: str):
         self._value = value
         self._name = name
 
@@ -125,11 +126,11 @@ class Argument:
     def name(self) -> str:
         return self._name
 
-    def __call__(self, x: Tensor) -> float:
+    def __call__(self, x: Tensor) -> Tensor:
         if callable(self._value):
             return self._value(x)
         else:
-            return self._value
+            return torch.tensor(self._value, device=x.device)
 
 
 class Parameter(nn.Module, Argument):
@@ -143,6 +144,7 @@ class Parameter(nn.Module, Argument):
         config: ScalarConfig | MLPConfig,
     ):
         super().__init__()
+        self.config = config
         self._name = config.name
         self._mode: Literal["scalar", "mlp"]
         self.scaler: Scaler | None = None
@@ -194,6 +196,23 @@ class Parameter(nn.Module, Argument):
                 x = self.scaler.transform_domain(x)
             return self.net(x)  # type: ignore
 
+    def log(self, x_coll: Tensor) -> Tensor | None:
+        if self.mode == "scalar":
+            return self.value if x_coll is None else self.value.expand_as(x_coll)
+
+        assert isinstance(self.config, MLPConfig)
+
+        if self.config.true_fn is not None:
+            true = self.config.true_fn(x_coll)
+            pred = self(x_coll)
+            return torch.norm(true - pred)  # type: ignore
+
+        return None
+
+
+# TODO: replace list[T] with registry
+ArgsRegistry = dict[str, Argument]
+ParamsRegistry = dict[str, Parameter]
 
 
 class Constraint(Protocol):
@@ -238,18 +257,18 @@ class Problem(nn.Module):
         self.scaler = scaler
 
     def total_loss(self, batch: PINNBatch, log: LogFn | None = None) -> Tensor:
-        device = batch[1].device
+        _, x_coll = batch
 
-        total = torch.tensor(0.0, device=device)
+        total = torch.tensor(0.0, device=x_coll.device)
         for c in self.constraints:
             total = total + c.loss(batch, self.criterion, log)
 
         if log is not None:
             for param in self.params:
-                if param.mode == "scalar":
-                    log(param.name, param.forward(), progress_bar=True)
-                # else if param.mode == "mlp":
-                #     log euclidean norm of the parameters with the ref function if provided
+                val = param.log(x_coll)
+                if val is not None:
+                    log(f"params/{param.name}", val, progress_bar=True)
+
             log(LOSS_KEY, total, progress_bar=True)
 
         return total
@@ -269,7 +288,14 @@ class Problem(nn.Module):
         for field in self.fields:
             results[field.name] = inverse_values(field(x_data)).squeeze(-1)
 
+        # params will transform x_data again under the hood
+        x_data = inverse_domain(x_data)
+
+        for param in self.params:
+            results[param.name] = inverse_values(param(x_data)).squeeze(-1)
+
         return results
+
 
 class Scaler(Protocol):
     def transform_domain(self, domain: Tensor) -> Tensor: ...

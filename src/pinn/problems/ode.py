@@ -37,6 +37,7 @@ class ODEProperties:
     args: list[Argument]
     Y0: list[float]
 
+
 class LinearScaler(Scaler):
     """
     Apply a linear scaling to a batch of data and collocations.
@@ -44,9 +45,9 @@ class LinearScaler(Scaler):
 
     def __init__(
         self,
+        y_scale: float = 1.0,
         x_min: float = 0.0,
         x_max: float = 1.0,
-        y_scale: float = 1.0,
     ) -> None:
         self.x_min = x_min
         self.x_max = x_max
@@ -74,26 +75,21 @@ class LinearScaler(Scaler):
         max = float(torch.max(data_max, Y0_max).item())
         self.y_scale = max if max > 1e-8 else 1.0
 
+    @override
     def transform_domain(self, domain: Tensor) -> Tensor:
         return (domain - self.x_min) / self.x_scale
 
+    @override
     def inverse_domain(self, domain: Tensor) -> Tensor:
         return domain * self.x_scale + self.x_min
 
+    @override
     def transform_values(self, values: Tensor) -> Tensor:
         return values / self.y_scale
 
+    @override
     def inverse_values(self, values: Tensor) -> Tensor:
         return values * self.y_scale
-
-    def transform_batch(self, batch: PINNBatch) -> PINNBatch:
-        (x_data, y_data), x_coll = batch
-
-        x_data = self.transform_domain(x_data)
-        y_data = self.transform_values(y_data)
-        x_coll = self.transform_domain(x_coll)
-
-        return ((x_data, y_data), x_coll)
 
     def scale_ode(self, ode: ODECallable) -> ODECallable:
         """
@@ -131,11 +127,11 @@ class ResidualsConstraint(Constraint):
         fields: list[Field],
         params: list[Parameter],
         weight: float,
-        scaler: Scaler | None = None,
+        scaler: LinearScaler,
     ):
-        self.scaler = scaler or Scaler()
+        self.scaler = scaler
         self.fields = fields
-        self.ode = self.scaler.scale_ode(props.ode)
+        self.ode_s = self.scaler.scale_ode(props.ode)
 
         params_names = [p.name for p in params]
         self.args = [a for a in props.args if a.name not in params_names]
@@ -156,7 +152,7 @@ class ResidualsConstraint(Constraint):
         preds = [f(t_coll) for f in self.fields]
         y = torch.stack(preds)
 
-        dy_dt_pred = self.ode(t_coll, y, self.args)
+        dy_dt_pred = self.ode_s(t_coll, y, self.args)
 
         dy_dt_list = []
         for pred in preds:
@@ -184,14 +180,13 @@ class ICConstraint(Constraint):
         fields: list[Field],
         weight: float,
         props: ODEProperties,
-        scaler: Scaler | None = None,
+        scaler: LinearScaler,
     ):
-        self.scaler = scaler or Scaler()
         Y0 = torch.tensor(props.Y0, dtype=torch.float32).reshape(-1, 1, 1)
         t0 = torch.tensor(props.domain.x0, dtype=torch.float32).reshape(1, 1)
 
-        self.t0 = self.scaler.transform_domain(t0)
-        self.Y0 = self.scaler.transform_values(Y0)
+        self.t0 = scaler.transform_domain(t0)
+        self.Y0 = scaler.transform_values(Y0)
 
         self.fields = fields
         self.weight = weight
@@ -260,16 +255,23 @@ class ODEDataset(Dataset[DataBatch]):
         self,
         props: ODEProperties,
         hp: PINNHyperparameters,
-        scaler: Scaler | None = None,
+        scaler: LinearScaler,
     ):
         self.hp = hp
         self.props = props
         self.domain = props.domain
-        self.scaler = scaler or Scaler()
+        self.scaler = scaler
 
         self.x, self.obs = (
             self.load_data(hp.ingestion) if hp.ingestion is not None else self.gen_data()
         )
+
+        # import matplotlib.pyplot as plt
+
+        # x = self.x.squeeze(-1).cpu().numpy()
+        # y = self.obs.squeeze(-1).cpu().numpy()
+        # plt.plot(x, y)
+        # plt.show()
 
     def gen_data(self) -> tuple[Tensor, Tensor]:
         x0, x1, dx = self.domain.x0, self.domain.x1, self.domain.dx

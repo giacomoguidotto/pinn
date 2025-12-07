@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-import math
 from typing import cast, override
 
 import torch
@@ -19,23 +19,22 @@ from pinn.core import (
     PINNDataset,
     Problem,
     ScalarConfig,
-    Scaler,
 )
 from pinn.lib.utils import find_or_raise
 from pinn.lightning import IngestionConfig, PINNHyperparameters, SchedulerConfig
 from pinn.problems.ode import (
     DataConstraint,
-    Domain1D,
     ICConstraint,
+    LinearScaler,
     ODECallable,
     ODEDataset,
     ODEProperties,
     ResidualsConstraint,
 )
 
-BETA_KEY = "params/beta"
-DELTA_KEY = "args/delta"
-N_KEY = "args/N"
+BETA_KEY = "beta"
+DELTA_KEY = "delta"
+N_KEY = "N"
 
 
 def SIR(x: Tensor, y: Tensor, args: list[Argument]) -> Tensor:
@@ -50,34 +49,22 @@ def SIR(x: Tensor, y: Tensor, args: list[Argument]) -> Tensor:
     return torch.stack([dS, dI])
 
 
-def beta_fn(x: Tensor) -> float:
-    return 0.6 * (1 + torch.sin(x * 2 * math.pi / 90.0)).item()
-
-
-@dataclass
+@dataclass(kw_only=True)
 class SIRInvProperties(ODEProperties):
+    N: float  # TODO: need a "constant" concept
+    delta: float | Callable[[Tensor], Tensor]
+    beta: float | Callable[[Tensor], Tensor]
+
+    I0: float
+
     ode: ODECallable = field(default_factory=lambda: SIR)
-    domain: Domain1D = field(
-        default_factory=lambda: Domain1D(
-            x0=0.0,
-            x1=90.0,
-            dx=1.0,
-        )
-    )
-
-    N: float = 56e6
-    delta: float = 1 / 5
-    # beta: float = delta * 3.0
     args: list[Argument] = field(default_factory=list)
-
-    I0: float = 1.0
     Y0: list[float] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.args = [
             Argument(self.delta, name=DELTA_KEY),
-            Argument(beta_fn, name=BETA_KEY),
-            # Argument(self.beta, name=BETA_KEY),
+            Argument(self.beta, name=BETA_KEY),
             Argument(self.N, name=N_KEY),
         ]
 
@@ -85,7 +72,7 @@ class SIRInvProperties(ODEProperties):
         self.Y0 = [S0, self.I0]
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SIRInvHyperparameters(PINNHyperparameters):
     max_epochs: int = 1000
     batch_size: int = 100
@@ -129,7 +116,7 @@ class SIRInvProblem(Problem):
         self,
         props: SIRInvProperties,
         hp: SIRInvHyperparameters,
-        scaler: Scaler | None = None,
+        scaler: LinearScaler,
     ) -> None:
         S_field = Field(config=replace(hp.fields_config, name="S"))
         I_field = Field(config=replace(hp.fields_config, name="I"))
@@ -141,16 +128,16 @@ class SIRInvProblem(Problem):
 
         constraints: list[Constraint] = [
             ResidualsConstraint(
-                fields=[S_field, I_field],
-                weight=hp.pde_weight,
                 props=props,
+                fields=[S_field, I_field],
                 params=[beta],
+                weight=hp.pde_weight,
                 scaler=scaler,
             ),
             ICConstraint(
+                props=props,
                 fields=[S_field, I_field],
                 weight=hp.ic_weight,
-                props=props,
                 scaler=scaler,
             ),
             DataConstraint(
@@ -176,7 +163,7 @@ class SIRInvDataset(ODEDataset):
         self,
         props: SIRInvProperties,
         hp: SIRInvHyperparameters,
-        scaler: Scaler | None = None,
+        scaler: LinearScaler,
     ):
         self.data_noise_level = hp.data_noise_level
         super().__init__(props, hp, scaler)
@@ -201,9 +188,8 @@ class SIRInvCollocationset(Dataset[Tensor]):
         self,
         props: SIRInvProperties,
         hp: SIRInvHyperparameters,
-        scaler: Scaler | None = None,
+        scaler: LinearScaler,
     ):
-        scaler = scaler or Scaler()
         self.domain = props.domain
         self.collocations = hp.collocations
         t = self.gen_coll()
@@ -230,7 +216,7 @@ class SIRInvDataModule(PINNDataModule):
         self,
         props: SIRInvProperties,
         hp: SIRInvHyperparameters,
-        scaler: Scaler | None = None,
+        scaler: LinearScaler,
     ):
         super().__init__()
         self.props = props

@@ -3,7 +3,6 @@
 from pinn.problems.ode import Domain1D, ODECallable, ODEDataset, ODEProperties
 from pinn.problems.sir_inverse import (
     SIR,
-    ODEDataset,
     SIRInvCollocationset,
     SIRInvDataModule,
     SIRInvHyperparameters,
