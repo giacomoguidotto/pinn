@@ -9,8 +9,17 @@ from torch import Tensor
 import torch.nn as nn
 from torch.utils.data import Dataset
 
-from pinn.core import Argument, Constraint, Field, Parameter, PINNDataModule, PINNDataset, Problem
-from pinn.core.core import ArgsRegistry, FieldsRegistry
+from pinn.core import (
+    ArgsRegistry,
+    Argument,
+    Constraint,
+    Field,
+    FieldsRegistry,
+    Parameter,
+    PINNDataModule,
+    PINNDataset,
+    Problem,
+)
 from pinn.lightning import PINNHyperparameters
 from pinn.problems.ode import (
     DataConstraint,

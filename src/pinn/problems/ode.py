@@ -14,12 +14,12 @@ from pinn.core import (
     Constraint,
     DataBatch,
     Field,
+    FieldsRegistry,
     LogFn,
     Parameter,
     PINNBatch,
     Scaler,
 )
-from pinn.core.core import FieldsRegistry
 from pinn.lightning import IngestionConfig, PINNHyperparameters
 
 ODECallable = Callable[[Tensor, Tensor, ArgsRegistry], Tensor]

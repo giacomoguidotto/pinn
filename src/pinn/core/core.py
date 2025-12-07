@@ -10,6 +10,8 @@ import torch.nn as nn
 
 from pinn.core.dataset import DataBatch, PINNBatch
 
+LOSS_KEY = "loss"
+
 Activations = Literal[
     "tanh",
     "relu",
@@ -19,6 +21,22 @@ Activations = Literal[
     "softplus",
     "identity",
 ]
+
+
+Predictions = tuple[DataBatch, dict[str, Tensor]]
+
+
+class LogFn(Protocol):
+    """
+    A function that logs a value to a dictionary.
+
+    Args:
+        name: The name to log the value under.
+        value: The value to log.
+        progress_bar: Whether the value should be logged to the progress bar.
+    """
+
+    def __call__(self, name: str, value: Tensor, progress_bar: bool = False) -> None: ...
 
 
 def get_activation(name: Activations) -> nn.Module:
@@ -35,22 +53,6 @@ def get_activation(name: Activations) -> nn.Module:
 
 def identity(x: Tensor) -> Tensor:
     return x
-
-
-class LogFn(Protocol):
-    """
-    A function that logs a value to a dictionary.
-
-    Args:
-        name: The name to log the value under.
-        value: The value to log.
-        progress_bar: Whether the value should be logged to the progress bar.
-    """
-
-    def __call__(self, name: str, value: Tensor, progress_bar: bool = False) -> None: ...
-
-
-LOSS_KEY: str = "loss"
 
 
 @dataclass
@@ -284,25 +286,24 @@ class Problem(nn.Module):
 
         return total
 
-    def predict(self, batch: DataBatch) -> dict[str, Tensor]:
-        # TODO: consider removing the batch from the results, as it is not formally a result
+    def predict(self, batch: DataBatch) -> Predictions:
         x_data, y_data = batch
 
         inverse_domain = self.scaler.inverse_domain if self.scaler is not None else identity
         inverse_values = self.scaler.inverse_values if self.scaler is not None else identity
 
-        results = {
-            "x_data": inverse_domain(x_data).squeeze(-1),
-            "y_data": inverse_values(y_data).squeeze(-1),
-        }
+        batch = (
+            inverse_domain(x_data).squeeze(-1),
+            inverse_values(y_data).squeeze(-1),
+        )
 
+        results = {}
         for field in self.fields:
             results[field.name] = inverse_values(field(x_data)).squeeze(-1)
 
         # params will transform x_data again under the hood
         x_data = inverse_domain(x_data)
-
         for param in self.params:
             results[param.name] = param(x_data).squeeze(-1)
 
-        return results
+        return batch, results

@@ -9,7 +9,16 @@ from lightning.pytorch.utilities.types import OptimizerLRScheduler
 import torch
 from torch import Tensor
 
-from pinn.core import LOSS_KEY, DataBatch, LogFn, MLPConfig, PINNBatch, Problem, ScalarConfig
+from pinn.core import (
+    LOSS_KEY,
+    DataBatch,
+    LogFn,
+    MLPConfig,
+    PINNBatch,
+    Predictions,
+    Problem,
+    ScalarConfig,
+)
 
 
 @dataclass(kw_only=True)
@@ -96,7 +105,7 @@ class PINNModule(pl.LightningModule):
         return self.problem.total_loss(batch, self._log)
 
     @override
-    def predict_step(self, batch: DataBatch, batch_idx: int) -> dict[str, Tensor]:
+    def predict_step(self, batch: DataBatch, batch_idx: int) -> Predictions:
         return self.problem.predict(batch)
 
     @override

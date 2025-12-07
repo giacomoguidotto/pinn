@@ -19,7 +19,7 @@ import seaborn as sns
 import torch
 from torch import Tensor
 
-from pinn.core import LOSS_KEY, MLPConfig
+from pinn.core import LOSS_KEY, MLPConfig, Predictions
 from pinn.lightning import (
     DataConfig,
     PINNModule,
@@ -30,13 +30,13 @@ from pinn.lightning import (
 from pinn.lightning.callbacks import FormattedProgressBar, Metric, PredictionsWriter
 from pinn.problems import (
     Domain1D,
+    LinearScaler,
     SIRInvDataModule,
     SIRInvHyperparameters,
     SIRInvProblem,
     SIRInvProperties,
 )
-from pinn.problems.ode import LinearScaler
-from pinn.problems.sir_inverse import BETA_KEY
+from pinn.problems.sir_inverse import BETA_KEY, I_KEY, S_KEY
 
 
 def create_dir(dir: Path) -> Path:
@@ -117,9 +117,10 @@ def execute(
     def on_prediction(
         _trainer: Trainer,
         _module: LightningModule,
-        predictions: dict[str, Tensor],
+        predictions_list: Sequence[Predictions],
         _batch_indices: Sequence[Any],
     ) -> None:
+        predictions = predictions_list[0]
         save_predictions(predictions, config.predictions_dir / "predictions.csv", props)
         plot_predictions(predictions, config.predictions_dir / "predictions.png", props)
 
@@ -184,17 +185,18 @@ def execute(
 
 
 def plot_predictions(
-    predictions: dict[str, Tensor],
+    predictions: Predictions,
     predictions_file: Path,
     props: SIRInvProperties,
 ) -> Figure:
-    t_data = predictions["x_data"]
-    I_data = predictions["y_data"]
-    S_pred = predictions["S"]
-    I_pred = predictions["I"]
+    batch, preds = predictions
+    t_data, I_data = batch
+
+    S_pred = preds["S"]
+    I_pred = preds["I"]
     R_pred = props.N - S_pred - I_pred
 
-    beta_pred = predictions[BETA_KEY]
+    beta_pred = preds[BETA_KEY]
     beta_true = beta_fn(t_data)
 
     sns.set_theme(style="darkgrid")
@@ -215,7 +217,7 @@ def plot_predictions(
     sns.lineplot(x=t_data, y=beta_true, label=r"$\beta_{true}$", ax=axes[1])
     sns.lineplot(x=t_data, y=beta_pred, label=r"$\beta_{pred}$", linestyle="--", ax=axes[1])
 
-    axes[1].set_ylim(0, 1)
+    axes[1].set_ylim(-0.1, 1.1)
     axes[1].set_title(r"$\beta$ Parameter Prediction")
     axes[1].set_xlabel("Time (days)")
     axes[1].set_ylabel(r"$\beta$ Value")
@@ -228,18 +230,19 @@ def plot_predictions(
 
 
 def save_predictions(
-    predictions: dict[str, Tensor],
+    predictions: Predictions,
     predictions_file: Path,
     props: SIRInvProperties,
 ) -> pd.DataFrame:
-    t_data = predictions["x_data"]
-    I_data = predictions["y_data"]
-    S_pred = predictions["S"]
-    I_pred = predictions["I"]
+    batch, preds = predictions
+    t_data, I_data = batch
+
+    S_pred = preds[S_KEY]
+    I_pred = preds[I_KEY]
     R_pred = props.N - S_pred - I_pred
 
     beta_true = beta_fn(t_data)
-    beta_pred = predictions[BETA_KEY]
+    beta_pred = preds[BETA_KEY]
 
     df = pd.DataFrame(
         {
