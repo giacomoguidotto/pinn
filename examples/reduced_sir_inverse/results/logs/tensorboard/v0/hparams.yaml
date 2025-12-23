@@ -1,10 +1,9 @@
-hp: !!python/object:pinn.problems.sir_inverse.SIRInvHyperparameters
+hp: !!python/object:pinn.problems.reduced_sir_inverse.ReducedSIRInvHyperparameters
   data: !!python/object:pinn.lightning.module.DataConfig
     batch_size: 100
     collocations: 6000
     data_noise_level: 1.0
     data_ratio: 2
-  data_weight: 1
   early_stopping: null
   fields_config: !!python/object:pinn.core.base.MLPConfig
     activation: tanh
@@ -19,10 +18,9 @@ hp: !!python/object:pinn.problems.sir_inverse.SIRInvHyperparameters
     out_dim: 1
     output_activation: softplus
     true_fn: null
-  ic_weight: 1
   ingestion: !!python/object:pinn.lightning.module.IngestionConfig
     df_path: !!python/object/apply:pathlib._local.PosixPath
-    - ./data/real_data.csv
+    - ./data/synthetic_data.csv
     x_column: null
     y_columns:
     - I_obs
@@ -37,15 +35,11 @@ hp: !!python/object:pinn.problems.sir_inverse.SIRInvHyperparameters
     name: u
     out_dim: 1
     output_activation: softplus
-    true_fn: !!python/name:__main__.beta_fn ''
-  pde_weight: 100.0
+    true_fn: !!python/name:__main__.Rt_fn ''
   scheduler: !!python/object:pinn.lightning.module.SchedulerConfig
     factor: 0.5
     min_lr: 1.0e-06
     mode: min
     patience: 55
     threshold: 0.005
-  smma_stopping: !!python/object:pinn.lightning.module.SMMAStoppingConfig
-    lookback: 50
-    threshold: 0.1
-    window: 50
+  smma_stopping: null
