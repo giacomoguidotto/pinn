@@ -195,17 +195,13 @@ def plot_and_save(
     Rt_true = trues[Rt_KEY] if trues else None
 
     I_pred = preds[I_KEY]
-    S_pred = -delta * Rt_pred * I_pred
-    R_pred = props.N - S_pred - I_pred
 
     # plot
     sns.set_theme(style="darkgrid")
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
-    sns.lineplot(x=t_data, y=S_pred, label="$S_{pred}$", ax=axes[0])
-    sns.lineplot(x=t_data, y=I_pred, label="$I_{pred}$", ax=axes[0])
-    sns.lineplot(x=t_data, y=R_pred, label="$R_{pred}$", ax=axes[0])
-    sns.lineplot(x=t_data, y=I_data, label="$I_{observed}$", linestyle="--", ax=axes[0])
+    sns.lineplot(x=t_data, y=I_data, label="$I_{observed}$", ax=axes[0])
+    sns.lineplot(x=t_data, y=I_pred, label="$I_{pred}$", linestyle="--", ax=axes[0])
 
     axes[0].set_title("SIR Model Predictions")
     axes[0].set_xlabel("Time (days)")
@@ -229,9 +225,7 @@ def plot_and_save(
         {
             "t": t_data,
             "I_observed": I_data,
-            "S_pred": S_pred,
             "I_pred": I_pred,
-            "R_pred": R_pred,
             "Rt_pred": Rt_pred,
             "Rt_true": Rt_true,
         }
@@ -282,7 +276,7 @@ if __name__ == "__main__":
     props = ReducedSIRInvProperties(
         domain=Domain1D(
             x0=0.0,
-            x1=90.0,
+            x1=120.0,
             dx=1.0,
         ),
         N=56e6,
