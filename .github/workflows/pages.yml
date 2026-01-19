@@ -8,10 +8,12 @@ on:
     branches: [main]
 
 env:
-  UV_VERSION: "0.9.13"
+  UV_VERSION: "0.9.26"
 
 jobs:
   deploy:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

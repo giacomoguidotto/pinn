@@ -89,7 +89,7 @@ watch:
   # Watch src/ directory to reload on changes to docstrings for mkdocstrings plugin.
   - src
 site_name: pinn
-copyright: Copyright &copy; 2025 Giacomo Guidotto
+copyright: Copyright &copy; 2026 Giacomo Guidotto
 # GitHub Specific Configuration.
 repo_name: pinn
 repo_url: https://github.com/giacomoguidotto/pinn
