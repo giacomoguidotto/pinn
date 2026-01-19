@@ -1,48 +1,48 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import cast, override
 
 import torch
 from torch import Tensor
 import torch.nn as nn
-from torch.utils.data import Dataset
+from torchdiffeq import odeint
 
 from pinn.core import (
     ArgsRegistry,
-    Argument,
     Constraint,
+    DataCallback,
+    Domain1D,
     Field,
     FieldsRegistry,
+    GenerationConfig,
     Parameter,
     PINNDataModule,
-    PINNDataset,
+    PINNHyperparameters,
     Problem,
+    ValidationRegistry,
 )
-from pinn.lightning import IngestionConfig, PINNHyperparameters
-from pinn.problems.ode import (
-    DataConstraint,
-    ICConstraint,
-    LinearScaler,
-    ODECallable,
-    ODEDataset,
-    ODEProperties,
-    ResidualsConstraint,
-)
+from pinn.problems.ode import DataConstraint, ICConstraint, ODEProperties, ResidualsConstraint
 
 S_KEY = "S"
 I_KEY = "I"
 BETA_KEY = "beta"
 DELTA_KEY = "delta"
 N_KEY = "N"
+Rt_KEY = "Rt"
 
 
 def SIR(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
     """
     The SIR ODE system.
-    dS/dt = -beta * S * I / N
-    dI/dt = beta * S * I / N - delta * I
+    $$
+    \\begin{align}
+    \\frac{dS}{dt} &= -beta * S * I / N \\\\
+    \\frac{dI}{dt} &= beta * S * I / N - delta * I \\\\
+    \\frac{dR}{dt} &= delta * I \\\\
+    \\end{align}
+    $$
 
     Args:
         x: Time variable.
@@ -53,42 +53,38 @@ def SIR(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
         Derivatives [dS/dt, dI/dt].
     """
     S, I = y
-    # TODO: use reflection to automate this
-    b = args[BETA_KEY]
-    d = args[DELTA_KEY]
-    N = args[N_KEY]
+    b, d, N = args[BETA_KEY], args[DELTA_KEY], args[N_KEY]
 
     dS = -b(x) * S * I / N(x)
     dI = b(x) * S * I / N(x) - d(x) * I
-    # dR = d(x) * I
     return torch.stack([dS, dI])
 
 
-@dataclass(kw_only=True)
-class SIRInvProperties(ODEProperties):
+def rSIR(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
     """
-    Properties specific to the SIR Inverse problem.
+    The reduced SIR ODE system.
+    $$
+    \\begin{align}
+    \\frac{dS}{dt} &= -delta * R * I \\
+    \\frac{dI}{dt} &= delta * (R - 1) * I \\
+    \\end{align}
+    $$
+
+    dI/dt = delta * (R - 1) * I
+
+    Args:
+        x: Time variable.
+        y: State variables [I].
+        args: Arguments dictionary (delta, Rt).
+
+    Returns:
+        Derivatives [dI/dt].
     """
+    I = y
+    d, Rt = args[DELTA_KEY], args[Rt_KEY]
 
-    N: float  # TODO: need a "constant" concept
-    delta: float | Callable[[Tensor], Tensor]
-    beta: float | Callable[[Tensor], Tensor]
-
-    I0: float
-
-    ode: ODECallable = field(default_factory=lambda: SIR)
-    args: ArgsRegistry = field(default_factory=dict)
-    Y0: list[float] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        self.args = {
-            DELTA_KEY: Argument(self.delta, name=DELTA_KEY),
-            BETA_KEY: Argument(self.beta, name=BETA_KEY),
-            N_KEY: Argument(self.N, name=N_KEY),
-        }
-
-        S0 = self.N - self.I0
-        self.Y0 = [S0, self.I0]
+    dI = d(x) * (Rt(x) - 1) * I
+    return dI
 
 
 @dataclass(kw_only=True)
@@ -98,9 +94,9 @@ class SIRInvHyperparameters(PINNHyperparameters):
     """
 
     # TODO: implement adaptive weights
-    pde_weight: float
-    ic_weight: float
-    data_weight: float
+    pde_weight: float = 1.0
+    ic_weight: float = 1.0
+    data_weight: float = 1.0
 
 
 class SIRInvProblem(Problem):
@@ -111,34 +107,30 @@ class SIRInvProblem(Problem):
 
     def __init__(
         self,
-        props: SIRInvProperties,
+        props: ODEProperties,
         hp: SIRInvHyperparameters,
-        scaler: LinearScaler,
+        fields: list[Field],
+        params: list[Parameter],
     ) -> None:
-        S_field = Field(config=replace(hp.fields_config, name=S_KEY))
-        I_field = Field(config=replace(hp.fields_config, name=I_KEY))
-        beta = Parameter(config=replace(hp.params_config, name=BETA_KEY))
-
-        def predict_data(t_data: Tensor, fields: FieldsRegistry) -> Tensor:
+        def predict_data(x_data: Tensor, fields: FieldsRegistry) -> Tensor:
             I = fields[I_KEY]
-            return cast(Tensor, I(t_data))
+            I_pred = I(x_data)
+            return cast(Tensor, I_pred)
 
         constraints: list[Constraint] = [
             ResidualsConstraint(
                 props=props,
-                fields=[S_field, I_field],
-                params=[beta],
-                scaler=scaler,
+                fields=fields,
+                params=params,
                 weight=hp.pde_weight,
             ),
             ICConstraint(
                 props=props,
-                fields=[S_field, I_field],
-                scaler=scaler,
+                fields=fields,
                 weight=hp.ic_weight,
             ),
             DataConstraint(
-                fields=[S_field, I_field],
+                fields=fields,
                 predict_data=predict_data,
                 weight=hp.data_weight,
             ),
@@ -149,80 +141,9 @@ class SIRInvProblem(Problem):
         super().__init__(
             constraints=constraints,
             criterion=criterion,
-            fields=[S_field, I_field],
-            params=[beta],
-            scaler=scaler,
+            fields=fields,
+            params=params,
         )
-
-
-class SIRInvDataset(ODEDataset):
-    """
-    Dataset generator for SIR Inverse problem with optional noise injection.
-    """
-
-    def __init__(
-        self,
-        props: SIRInvProperties,
-        hp: SIRInvHyperparameters,
-        scaler: LinearScaler,
-    ):
-        self.data_noise_level = hp.data.data_noise_level
-        super().__init__(props, hp, scaler)
-
-    @override
-    def gen_data(self) -> tuple[Tensor, Tensor]:
-        """
-        Generates synthetic data and adds Poisson noise to observed I.
-        """
-        x, data = super().gen_data()
-
-        if data.dim() > 2 and data.shape[-1] == 1:
-            data = data.squeeze(-1)
-
-        I_scaled = data[:, 1].clamp_min(0.0)
-        I_physical = self.scaler.inverse_values(I_scaled)
-        I_obs_physical = torch.poisson(I_physical / self.data_noise_level) * self.data_noise_level
-        I_obs_scaled = self.scaler.transform_values(I_obs_physical)
-
-        return x, I_obs_scaled.unsqueeze(-1)
-
-    @override
-    def load_data(self, ingestion: IngestionConfig) -> tuple[Tensor, Tensor]:
-        x, obs = super().load_data(ingestion)
-        I_obs = (obs.squeeze(-1))[:, 0]
-        return x, I_obs.unsqueeze(-1)
-
-
-class SIRInvCollocationset(Dataset[Tensor]):
-    """
-    Generates collocation points, sampled logarithmically to focus on early dynamics.
-    """
-
-    def __init__(
-        self,
-        props: SIRInvProperties,
-        hp: SIRInvHyperparameters,
-        scaler: LinearScaler,
-    ):
-        self.domain = props.domain
-        self.collocations = hp.data.collocations
-        t = self.gen_coll()
-
-        self.t = scaler.transform_domain(t)
-
-    def gen_coll(self) -> Tensor:
-        t0_s = torch.log1p(torch.tensor(self.domain.x0, dtype=torch.float32))
-        t1_s = torch.log1p(torch.tensor(self.domain.x1, dtype=torch.float32))
-        t_s = torch.rand((self.collocations, 1)) * (t1_s - t0_s) + t0_s
-        t = torch.expm1(t_s)
-        return t
-
-    @override
-    def __getitem__(self, idx: int) -> Tensor:
-        return self.t[idx]
-
-    def __len__(self) -> int:
-        return len(self.t)
 
 
 class SIRInvDataModule(PINNDataModule):
@@ -232,30 +153,47 @@ class SIRInvDataModule(PINNDataModule):
 
     def __init__(
         self,
-        props: SIRInvProperties,
         hp: SIRInvHyperparameters,
-        scaler: LinearScaler,
+        gen_props: ODEProperties | None = None,
+        validation: ValidationRegistry | None = None,
+        callbacks: Sequence[DataCallback] | None = None,
     ):
-        super().__init__()
-        self.props = props
-        self.hp = hp
-        self.scaler = scaler
+        super().__init__(hp, validation, callbacks)
+        self.gen_props = gen_props
 
     @override
-    def setup(self, stage: str | None = None) -> None:
-        self.data_ds = SIRInvDataset(
-            self.props,
-            self.hp,
-            self.scaler,
+    def gen_coll(self, domain: Domain1D) -> Tensor:
+        """Generate collocation points."""
+        x0 = torch.tensor(domain.x0, dtype=torch.float32)
+        x1 = torch.tensor(domain.x1, dtype=torch.float32)
+
+        coll = torch.rand((self.hp.training_data.collocations, 1))
+        coll = coll * (torch.log1p(x1) - torch.log1p(x0)) + torch.log1p(x0)
+        coll = torch.expm1(coll)
+        return coll
+
+    @override
+    def gen_data(self, config: GenerationConfig) -> tuple[Tensor, Tensor]:
+        """Generate synthetic data."""
+        assert self.gen_props is not None, "SIR properties are required to generate data"
+
+        args = self.gen_props.args.copy()
+        args.update(config.args_to_train)
+
+        data = odeint(
+            lambda x, y: self.gen_props.ode(x, y, args),
+            self.gen_props.y0,
+            config.x,
         )
-        self.coll_ds = SIRInvCollocationset(
-            self.props,
-            self.hp,
-            self.scaler,
-        )
-        self.pinn_ds = PINNDataset(
-            data_ds=self.data_ds,
-            coll_ds=self.coll_ds,
-            batch_size=self.hp.data.batch_size,
-            data_ratio=self.hp.data.data_ratio,
-        )
+
+        I_true = data[:, 1].clamp_min(0.0)
+
+        I_obs = self._noise(I_true, config.noise_level)
+
+        return config.x.unsqueeze(-1), I_obs.unsqueeze(-1)
+
+    def _noise(self, I_true: Tensor, noise_level: float) -> Tensor:
+        if noise_level < 1.0:
+            return I_true
+        else:
+            return torch.poisson(I_true / noise_level) * noise_level

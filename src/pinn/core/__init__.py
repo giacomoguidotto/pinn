@@ -1,44 +1,71 @@
 """Core PINN building blocks."""
 
-from pinn.core.base import (
-    LOSS_KEY,
-    Activations,
+from pinn.core.config import (
+    EarlyStoppingConfig,
+    GenerationConfig,
+    IngestionConfig,
+    MLPConfig,
+    PINNHyperparameters,
+    ScalarConfig,
+    SchedulerConfig,
+    SMMAStoppingConfig,
+    TrainingDataConfig,
+)
+from pinn.core.context import InferredContext
+from pinn.core.dataset import DataCallback, PINNDataModule, PINNDataset
+from pinn.core.nn import (
     ArgsRegistry,
     Argument,
-    Constraint,
+    Domain1D,
     Field,
     FieldsRegistry,
-    LogFn,
-    MLPConfig,
     Parameter,
     ParamsRegistry,
-    Predictions,
-    Problem,
-    ScalarConfig,
-    Scaler,
     get_activation,
 )
-from pinn.core.dataset import DataBatch, PINNBatch, PINNDataModule, PINNDataset
+from pinn.core.problem import Constraint, Problem
+from pinn.core.types import LOSS_KEY, Activations, DataBatch, LogFn, Predictions, TrainingBatch
+from pinn.core.validation import (
+    ColumnRef,
+    ResolvedValidation,
+    ValidationRegistry,
+    ValidationSource,
+    resolve_validation,
+)
 
 __all__ = [
     "LOSS_KEY",
     "Activations",
     "ArgsRegistry",
     "Argument",
+    "ColumnRef",
     "Constraint",
     "DataBatch",
+    "DataCallback",
+    "Domain1D",
+    "EarlyStoppingConfig",
     "Field",
     "FieldsRegistry",
+    "GenerationConfig",
+    "InferredContext",
+    "IngestionConfig",
     "LogFn",
     "MLPConfig",
-    "PINNBatch",
     "PINNDataModule",
     "PINNDataset",
+    "PINNHyperparameters",
     "Parameter",
     "ParamsRegistry",
     "Predictions",
     "Problem",
+    "ResolvedValidation",
+    "SMMAStoppingConfig",
     "ScalarConfig",
-    "Scaler",
+    "SchedulerConfig",
+    "TrainingBatch",
+    "TrainingDataConfig",
+    "ValidationRegistry",
+    "ValidationSource",
     "get_activation",
+    "resolve_validation",
 ]
