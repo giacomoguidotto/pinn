@@ -1,0 +1,107 @@
+<<<<<<<< HEAD:examples/sir_inverse/logs/csv/sir-inverse/v3-real-data/hparams.yaml
+hp: !!python/object:pinn.problems.sir_inverse.SIRInvHyperparameters
+  data_weight: 1
+|||||||| 3f5af1f:examples/sir_inverse/results/logs/tensorboard/v5/hparams.yaml
+hp: !!python/object:pinn.problems.sir_inverse.SIRInvHyperparameters
+  data: !!python/object:pinn.lightning.module.DataConfig
+    batch_size: 100
+    collocations: 6000
+    data_noise_level: 1.0
+    data_ratio: 2
+  data_weight: 1
+========
+hp: !!python/object:pinn.problems.reduced_sir_inverse.ReducedSIRInvHyperparameters
+  data: !!python/object:pinn.lightning.module.DataConfig
+    batch_size: 100
+    collocations: 6000
+    data_noise_level: 1.0
+    data_ratio: 2
+>>>>>>>> main:examples/reduced_sir_inverse/results/logs/csv/v0/hparams.yaml
+  early_stopping: null
+<<<<<<<< HEAD:examples/sir_inverse/logs/csv/sir-inverse/v3-real-data/hparams.yaml
+  fields_config: !!python/object:pinn.core.config.MLPConfig
+|||||||| 3f5af1f:examples/sir_inverse/results/logs/tensorboard/v5/hparams.yaml
+  fields_config: !!python/object:pinn.core.core.MLPConfig
+========
+  fields_config: !!python/object:pinn.core.base.MLPConfig
+>>>>>>>> main:examples/reduced_sir_inverse/results/logs/csv/v0/hparams.yaml
+    activation: tanh
+    encode: null
+    hidden_layers:
+    - 64
+    - 128
+    - 128
+    - 64
+    in_dim: 1
+    name: u
+    out_dim: 1
+    output_activation: softplus
+<<<<<<<< HEAD:examples/sir_inverse/logs/csv/sir-inverse/v3-real-data/hparams.yaml
+  ic_weight: 1
+|||||||| 3f5af1f:examples/sir_inverse/results/logs/tensorboard/v5/hparams.yaml
+    true_fn: null
+  ic_weight: 1
+  ingestion: null
+========
+    true_fn: null
+  ingestion: !!python/object:pinn.lightning.module.IngestionConfig
+    df_path: !!python/object/apply:pathlib._local.PosixPath
+    - ./data/synthetic_data.csv
+    x_column: null
+    y_columns:
+    - I_obs
+>>>>>>>> main:examples/reduced_sir_inverse/results/logs/csv/v0/hparams.yaml
+  lr: 0.0005
+<<<<<<<< HEAD:examples/sir_inverse/logs/csv/sir-inverse/v3-real-data/hparams.yaml
+  params_config: !!python/object:pinn.core.config.MLPConfig
+|||||||| 3f5af1f:examples/sir_inverse/results/logs/tensorboard/v5/hparams.yaml
+  params_config: !!python/object:pinn.core.core.MLPConfig
+========
+  params_config: !!python/object:pinn.core.base.MLPConfig
+>>>>>>>> main:examples/reduced_sir_inverse/results/logs/csv/v0/hparams.yaml
+    activation: tanh
+    encode: null
+    hidden_layers:
+    - 64
+    - 128
+    - 128
+    - 64
+    in_dim: 1
+    name: u
+    out_dim: 1
+    output_activation: softplus
+<<<<<<<< HEAD:examples/sir_inverse/logs/csv/sir-inverse/v3-real-data/hparams.yaml
+  pde_weight: 1
+  scheduler: !!python/object:pinn.core.config.SchedulerConfig
+|||||||| 3f5af1f:examples/sir_inverse/results/logs/tensorboard/v5/hparams.yaml
+    true_fn: !!python/name:__main__.beta_fn ''
+  pde_weight: 100.0
+  scheduler: !!python/object:pinn.lightning.module.SchedulerConfig
+========
+    true_fn: !!python/name:__main__.Rt_fn ''
+  scheduler: !!python/object:pinn.lightning.module.SchedulerConfig
+>>>>>>>> main:examples/reduced_sir_inverse/results/logs/csv/v0/hparams.yaml
+    factor: 0.5
+    min_lr: 1.0e-06
+    mode: min
+    patience: 55
+    threshold: 0.005
+  smma_stopping: null
+<<<<<<<< HEAD:examples/sir_inverse/logs/csv/sir-inverse/v3-real-data/hparams.yaml
+  training_data: !!python/object:pinn.core.config.IngestionConfig
+    batch_size: 100
+    collocations: 6000
+    data_ratio: 2
+    df_path: !!python/object/apply:pathlib._local.PosixPath
+    - ./data/real_sir_data.csv
+    x_column: null
+    x_transform: null
+    y_columns:
+    - I_obs
+|||||||| 3f5af1f:examples/sir_inverse/results/logs/tensorboard/v5/hparams.yaml
+  smma_stopping: !!python/object:pinn.lightning.module.SMMAStoppingConfig
+    lookback: 50
+    threshold: 0.1
+    window: 50
+========
+>>>>>>>> main:examples/reduced_sir_inverse/results/logs/csv/v0/hparams.yaml
