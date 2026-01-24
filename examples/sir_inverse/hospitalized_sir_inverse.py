@@ -66,12 +66,12 @@ class HospitalizedSIRInvProblem(Problem):
         C_I: float,
     ) -> None:
         def predict_data(x_data: Tensor, fields: FieldsRegistry) -> Tensor:
-            delta_arg = props.args[DELTA_KEY]
+            delta = props.args[DELTA_KEY]
             I = fields[I_KEY]
             sigma = next(p for p in params if p.name == SIGMA_KEY)
 
             I_pred: Tensor = I(x_data)
-            H_pred: Tensor = (delta_arg(x_data) * sigma(x_data) * I_pred * C_I) / C_H
+            H_pred: Tensor = (delta(x_data) * C_I * sigma(x_data) * I_pred) / C_H
 
             return torch.stack([I_pred, H_pred])
 
@@ -195,24 +195,22 @@ def main(config: RunConfig) -> None:
     C_I = 1e6
     C_H = 1e3
     T = 120
-    delta = 1 / 5
+    d = 1 / 5
 
     def hSIR_s(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
         """Reduced SIR ODE with hospitalization constraint: dI/dt = δ(Rt - 1)I"""
-        I, _ = y
-        d, sigma, Rt = args[DELTA_KEY], args[SIGMA_KEY], args[Rt_KEY]
+        I = y
+        d, Rt = args[DELTA_KEY], args[Rt_KEY]
 
         dI = d(x) * (Rt(x) - 1) * I
-        dH = d(x) * sigma(x) * I
         dI = dI * T
-        dH = dH * T
-        return torch.stack([dI, dH])
+        return dI
 
     props = ODEProperties(
         ode=hSIR_s,
-        y0=torch.tensor([1 / C_I, 0 / C_H]),
+        y0=torch.tensor([1]) / C_I,
         args={
-            DELTA_KEY: Argument(delta, name=DELTA_KEY),
+            DELTA_KEY: Argument(d, name=DELTA_KEY),
         },
     )
 
@@ -237,7 +235,6 @@ def main(config: RunConfig) -> None:
 
     # define problem
     I_field = Field(config=replace(hp.fields_config, name=I_KEY))
-    H_field = Field(config=replace(hp.fields_config, name=H_KEY))
     Rt = Parameter(config=replace(hp.params_config, name=Rt_KEY))
     sigma = Parameter(
         config=replace(
@@ -250,7 +247,7 @@ def main(config: RunConfig) -> None:
     problem = HospitalizedSIRInvProblem(
         props=props,
         hp=hp,
-        fields=[I_field, H_field],
+        fields=[I_field],
         params=[Rt, sigma],
         C_H=C_H,
         C_I=C_I,
@@ -287,7 +284,7 @@ def main(config: RunConfig) -> None:
         PredictionsWriter(
             predictions_path=config.predictions_dir / "predictions.pt",
             on_prediction=lambda _, __, predictions_list, ___: plot_and_save(
-                predictions_list[0], config.predictions_dir, props, C_I, C_H, delta
+                predictions_list[0], config.predictions_dir, props, C_I, C_H, d
             ),
         ),
     ]
@@ -351,7 +348,7 @@ def plot_and_save(
     Rt_pred = preds[Rt_KEY]
     sigma_pred = preds[SIGMA_KEY]
 
-    H_pred = C_H * preds[H_KEY]
+    H_pred = delta * sigma_pred * I_pred
 
     I_obs = C_I * I_obs_data
     H_obs = C_H * H_obs_data
@@ -454,7 +451,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     experiment_name = "hospitalized-sir-inverse"
-    run_name = "v0-with-h-as-field"
+    run_name = "v0"
 
     log_dir = Path("./logs")
     tensorboard_dir = log_dir / "tensorboard"
