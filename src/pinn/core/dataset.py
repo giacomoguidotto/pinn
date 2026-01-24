@@ -198,8 +198,8 @@ class PINNDataModule(pl.LightningDataModule, ABC):
         assert x_data.shape[0] == y_data.shape[0], "Size mismatch between x and y."
         assert x_data.ndim == 2, "x shape differs than (n, 1)."
         assert x_data.shape[1] == 1, "x shape differs than (n, 1)."
-        assert y_data.ndim == 2, "y shape differs than (n, 1)."
-        assert y_data.shape[1] == 1, "y shape differs than (n, 1)."
+        assert y_data.ndim > 1, "y shape cannot be (n)."
+        assert y_data.shape[-1] == 1, "y shape differs than (n, 1)."
         assert self.coll.ndim == 2, "coll shape differs than (m, 1)."
         assert self.coll.shape[1] == 1, "coll shape differs than (m, 1)."
 

@@ -14,6 +14,17 @@
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/examples/sir_inverse"
+        },
+        {
+            "name": "Python Debugger: hospitalized_sir_inverse.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "hospitalized_sir_inverse.py",
+            "args": [
+                "--predict"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/examples/sir_inverse"
         }
     ]
 }

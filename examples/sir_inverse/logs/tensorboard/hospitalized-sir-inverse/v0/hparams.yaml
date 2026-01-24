@@ -44,4 +44,5 @@ hp: !!python/object:pinn.problems.sir_inverse.SIRInvHyperparameters
     x_column: null
     x_transform: null
     y_columns:
+    - I_obs
     - H_obs

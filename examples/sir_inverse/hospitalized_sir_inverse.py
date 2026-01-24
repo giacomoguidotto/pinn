@@ -66,20 +66,20 @@ class HospitalizedSIRInvProblem(Problem):
         C_I: float,
     ) -> None:
         def predict_data(x_data: Tensor, fields: FieldsRegistry) -> Tensor:
-            delta = props.args[DELTA_KEY]
+            delta_arg = props.args[DELTA_KEY]
             I = fields[I_KEY]
             sigma = next(p for p in params if p.name == SIGMA_KEY)
 
-            H_pred: Tensor = (delta(x_data) * C_I * sigma(x_data) * I(x_data)) / C_H
+            I_pred: Tensor = I(x_data)
+            H_pred: Tensor = (delta_arg(x_data) * sigma(x_data) * I_pred * C_I) / C_H
 
-            return H_pred
+            return torch.stack([I_pred, H_pred])
 
-        # Build constraints
         constraints: list[Constraint] = [
             ResidualsConstraint(
                 props=props,
                 fields=fields,
-                params=[p for p in params if p.name == Rt_KEY],
+                params=params,
                 weight=hp.pde_weight,
             ),
             ICConstraint(
@@ -158,7 +158,7 @@ def main(config: RunConfig) -> None:
             data_ratio=2,
             collocations=6000,
             df_path=Path("./data/synt_h_data.csv"),
-            y_columns=["H_obs"],
+            y_columns=["I_obs", "H_obs"],
         ),
         fields_config=MLPConfig(
             in_dim=1,
@@ -195,22 +195,24 @@ def main(config: RunConfig) -> None:
     C_I = 1e6
     C_H = 1e3
     T = 120
-    d = 1 / 5
+    delta = 1 / 5
 
     def hSIR_s(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
         """Reduced SIR ODE with hospitalization constraint: dI/dt = δ(Rt - 1)I"""
-        I = y
-        d, Rt = args[DELTA_KEY], args[Rt_KEY]
+        I, _ = y
+        d, sigma, Rt = args[DELTA_KEY], args[SIGMA_KEY], args[Rt_KEY]
 
         dI = d(x) * (Rt(x) - 1) * I
+        dH = d(x) * sigma(x) * I
         dI = dI * T
-        return dI
+        dH = dH * T
+        return torch.stack([dI, dH])
 
     props = ODEProperties(
         ode=hSIR_s,
-        y0=torch.tensor([1]) / C_I,
+        y0=torch.tensor([1 / C_I, 0 / C_H]),
         args={
-            DELTA_KEY: Argument(d, name=DELTA_KEY),
+            DELTA_KEY: Argument(delta, name=DELTA_KEY),
         },
     )
 
@@ -230,11 +232,12 @@ def main(config: RunConfig) -> None:
     dm = SIRInvDataModule(
         hp=hp,
         validation=validation,
-        callbacks=[DataScaling(y_scale=1 / C_H)],
+        callbacks=[DataScaling(y_scale=[1 / C_I, 1 / C_H])],
     )
 
     # define problem
     I_field = Field(config=replace(hp.fields_config, name=I_KEY))
+    H_field = Field(config=replace(hp.fields_config, name=H_KEY))
     Rt = Parameter(config=replace(hp.params_config, name=Rt_KEY))
     sigma = Parameter(
         config=replace(
@@ -247,7 +250,7 @@ def main(config: RunConfig) -> None:
     problem = HospitalizedSIRInvProblem(
         props=props,
         hp=hp,
-        fields=[I_field],
+        fields=[I_field, H_field],
         params=[Rt, sigma],
         C_H=C_H,
         C_I=C_I,
@@ -284,7 +287,7 @@ def main(config: RunConfig) -> None:
         PredictionsWriter(
             predictions_path=config.predictions_dir / "predictions.pt",
             on_prediction=lambda _, __, predictions_list, ___: plot_and_save(
-                predictions_list[0], config.predictions_dir, props, C_I, C_H, d
+                predictions_list[0], config.predictions_dir, props, C_I, C_H, delta
             ),
         ),
     ]
@@ -341,29 +344,25 @@ def plot_and_save(
     delta: float,
 ) -> None:
     batch, preds, trues = predictions
-    t_data, H_obs_data = batch
+    t_data, y_data = batch
+    I_obs_data, H_obs_data = y_data[:, 0], y_data[:, 1]
 
-    # Extract predictions
-    I_pred = C_I * preds[I_KEY]  # Unscale infections
+    I_pred = C_I * preds[I_KEY]
     Rt_pred = preds[Rt_KEY]
     sigma_pred = preds[SIGMA_KEY]
 
-    # Compute predicted hospitalizations from I and sigma
-    # H_pred = delta * sigma * I (daily new hospitalizations)
-    H_pred = delta * sigma_pred * I_pred
+    H_pred = C_H * preds[H_KEY]
 
-    # Unscale observed hospitalizations
+    I_obs = C_I * I_obs_data
     H_obs = C_H * H_obs_data
 
-    # Extract ground truth if available
     Rt_true = trues[Rt_KEY] if trues and Rt_KEY in trues else None
     sigma_true = trues[SIGMA_KEY] if trues and SIGMA_KEY in trues else None
 
-    # Create plots
+    # plot
     sns.set_theme(style="darkgrid")
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
 
-    # Plot 1: Hospitalization data fit
     ax = axes[0, 0]
     sns.lineplot(x=t_data, y=H_pred, label=r"$\Delta H_{pred}$", ax=ax, color="C0")
     sns.scatterplot(
@@ -374,15 +373,14 @@ def plot_and_save(
     ax.set_ylabel("Daily Hospitalizations")
     ax.legend()
 
-    # Plot 2: Predicted infections
     ax = axes[0, 1]
     sns.lineplot(x=t_data, y=I_pred, label="$I_{pred}$", ax=ax, color="C2")
+    sns.scatterplot(x=t_data, y=I_obs, label="$I_{obs}$", ax=ax, color="C1", s=20, alpha=0.6)
     ax.set_title("Predicted Infected Population")
     ax.set_xlabel("Time (days)")
     ax.set_ylabel("I (Population)")
     ax.legend()
 
-    # Plot 3: Rt parameter
     ax = axes[1, 0]
     if Rt_true is not None:
         sns.lineplot(x=t_data, y=Rt_true, label=r"$R_{t, true}$", ax=ax, color="C3")
@@ -400,7 +398,6 @@ def plot_and_save(
     ax.set_ylabel(r"$R_t$")
     ax.legend()
 
-    # Plot 4: Sigma parameter (hospitalization rate)
     ax = axes[1, 1]
     if sigma_true is not None:
         sns.lineplot(x=t_data, y=sigma_true, label=r"$\sigma_{true}$", ax=ax, color="C5")
@@ -457,7 +454,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     experiment_name = "hospitalized-sir-inverse"
-    run_name = "v0"
+    run_name = "v0-with-h-as-field"
 
     log_dir = Path("./logs")
     tensorboard_dir = log_dir / "tensorboard"

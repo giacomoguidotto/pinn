@@ -173,10 +173,17 @@ class PredictionsWriter(BasePredictionWriter):
 class DataScaling(DataCallback):
     """
     Callback to transform the data and collocation points.
+
+    Scales x to [0, 1] and applies per-series scaling factors to y.
+
+    Args:
+        y_scale: Scaling factor(s) for y data. Can be:
+            - A single float: applied to all series
+            - A sequence of floats: one per series (length must match number of series)
     """
 
-    def __init__(self, y_scale: float):
-        self.y_scale = y_scale
+    def __init__(self, y_scale: float | Sequence[float]):
+        self._y_scale_input = y_scale
 
     @override
     def transform_data(self, data: DataBatch, coll: Tensor) -> tuple[DataBatch, Tensor]:
@@ -187,7 +194,25 @@ class DataScaling(DataCallback):
         x = (x - x.min()) / (x.max() - x.min())
         coll = (coll - coll.min()) / (coll.max() - coll.min())
 
-        return (x, y * self.y_scale), coll
+        # Determine number of series: y is [n, 1] or [n, k, 1]
+        n_series = y.shape[1] if y.ndim == 3 else 1
+
+        # Build y_scale tensor with shape broadcastable to y
+        if isinstance(self._y_scale_input, (int, float)):
+            scale_list = [float(self._y_scale_input)] * n_series
+        else:
+            scale_list = list(self._y_scale_input)
+            if len(scale_list) != n_series:
+                raise ValueError(
+                    f"y_scale has {len(scale_list)} elements but data has {n_series} series"
+                )
+
+        self.y_scale = torch.tensor(scale_list, dtype=y.dtype, device=y.device)
+
+        # Reshape for broadcasting: [k] -> [1, k, 1] for [n, k, 1] or keep [1] for [n, 1]
+        scale_tensor = self.y_scale.view(1, -1, 1) if y.ndim == 3 else self.y_scale.view(1)
+
+        return (x, y * scale_tensor), coll
 
     @override
     def on_after_setup(self, dm: PINNDataModule) -> None:
