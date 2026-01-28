@@ -9,11 +9,10 @@ import torch.nn as nn
 from pinn.core import (
     ArgsRegistry,
     Constraint,
-    Field,
     FieldsRegistry,
     InferredContext,
     LogFn,
-    Parameter,
+    ParamsRegistry,
     TrainingBatch,
 )
 
@@ -58,8 +57,8 @@ class ResidualsConstraint(Constraint):
     def __init__(
         self,
         props: ODEProperties,
-        fields: list[Field],
-        params: list[Parameter],
+        fields: FieldsRegistry,
+        params: ParamsRegistry,
         weight: float = 1.0,
     ):
         self.fields = fields
@@ -69,7 +68,7 @@ class ResidualsConstraint(Constraint):
 
         # add the trainable params as args
         self.args = props.args.copy()
-        self.args.update({p.name: p for p in params})
+        self.args.update(params)
 
     @override
     def loss(
@@ -81,7 +80,7 @@ class ResidualsConstraint(Constraint):
         _, x_coll = batch
         x_coll.requires_grad_()
 
-        preds = [f(x_coll) for f in self.fields]
+        preds = [f(x_coll) for f in self.fields.values()]
         y = torch.stack(preds)
 
         dy_dt_pred = self.ode(x_coll, y, self.args)
@@ -107,14 +106,14 @@ class ICConstraint(Constraint):
     Minimizes ||y(t0) - Y0||^2.
 
     Args:
-        fields: List of fields.
+        fields: Fields registry.
         weight: Weight for this loss term.
     """
 
     def __init__(
         self,
         props: ODEProperties,
-        fields: list[Field],
+        fields: FieldsRegistry,
         weight: float = 1.0,
     ):
         self.Y0 = props.y0.clone().reshape(-1, 1, 1)
@@ -140,7 +139,7 @@ class ICConstraint(Constraint):
         t0 = self.t0.to(device)
         Y0 = self.Y0.to(device)
 
-        Y0_preds = torch.stack([f(t0) for f in self.fields])
+        Y0_preds = torch.stack([f(t0) for f in self.fields.values()])
 
         loss: Tensor = criterion(Y0_preds, Y0)
         loss = self.weight * loss
@@ -151,7 +150,7 @@ class ICConstraint(Constraint):
         return loss
 
 
-PredictDataFn: TypeAlias = Callable[[Tensor, FieldsRegistry], Tensor]
+PredictDataFn: TypeAlias = Callable[[Tensor, FieldsRegistry, ParamsRegistry], Tensor]
 
 
 class DataConstraint(Constraint):
@@ -160,18 +159,21 @@ class DataConstraint(Constraint):
     Minimizes ||Predictions - Data||^2.
 
     Args:
-        fields: List of fields.
+        fields: Fields registry.
+        params: Parameters registry.
         predict_data: Function to predict data values from fields.
         weight: Weight for this loss term.
     """
 
     def __init__(
         self,
-        fields: list[Field],
+        fields: FieldsRegistry,
+        params: ParamsRegistry,
         predict_data: PredictDataFn,
         weight: float = 1.0,
     ):
-        self.fields: FieldsRegistry = {f.name: f for f in fields}
+        self.fields = fields
+        self.params = params
         self.predict_data = predict_data
         self.weight = weight
 
@@ -184,7 +186,7 @@ class DataConstraint(Constraint):
     ) -> Tensor:
         (x_data, y_data), _ = batch
 
-        y_data_pred = self.predict_data(x_data, self.fields)
+        y_data_pred = self.predict_data(x_data, self.fields, self.params)
 
         loss: Tensor = criterion(y_data_pred, y_data)
         loss = self.weight * loss

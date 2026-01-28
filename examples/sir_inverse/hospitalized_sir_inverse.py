@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
-from typing import cast
 
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
@@ -27,6 +26,7 @@ from pinn.core import (
     IngestionConfig,
     MLPConfig,
     Parameter,
+    ParamsRegistry,
     Predictions,
     Problem,
     SchedulerConfig,
@@ -35,7 +35,7 @@ from pinn.core import (
 from pinn.lightning import PINNModule, SMMAStopping
 from pinn.lightning.callbacks import DataScaling, FormattedProgressBar, Metric, PredictionsWriter
 from pinn.problems import ODEProperties, SIRInvDataModule, SIRInvHyperparameters
-from pinn.problems.ode import DataConstraint, ICConstraint, ResidualsConstraint
+from pinn.problems.ode import DataConstraint, ICConstraint, PredictDataFn, ResidualsConstraint
 from pinn.problems.sir_inverse import DELTA_KEY, I_KEY, Rt_KEY
 
 # ============================================================================
@@ -60,21 +60,10 @@ class HospitalizedSIRInvProblem(Problem):
         self,
         props: ODEProperties,
         hp: SIRInvHyperparameters,
-        fields: list[Field],
-        params: list[Parameter],
-        C_H: float,
-        C_I: float,
+        fields: FieldsRegistry,
+        params: ParamsRegistry,
+        predict_data: PredictDataFn,
     ) -> None:
-        def predict_data(x_data: Tensor, fields: FieldsRegistry) -> Tensor:
-            delta = props.args[DELTA_KEY]
-            I = fields[I_KEY]
-            sigma = next(p for p in params if p.name == SIGMA_KEY)
-
-            I_pred: Tensor = I(x_data)
-            H_pred: Tensor = (delta(x_data) * C_I * sigma(x_data) * I_pred) / C_H
-
-            return torch.stack([I_pred, H_pred])
-
         constraints: list[Constraint] = [
             ResidualsConstraint(
                 props=props,
@@ -89,6 +78,7 @@ class HospitalizedSIRInvProblem(Problem):
             ),
             DataConstraint(
                 fields=fields,
+                params=params,
                 predict_data=predict_data,
                 weight=hp.data_weight,
             ),
@@ -147,6 +137,11 @@ def format_progress_bar(key: str, value: Metric) -> Metric:
 
 
 def main(config: RunConfig) -> None:
+    # constants used for the scaling feature of this implementation
+    C_I = 1e6
+    C_H = 1e3
+    T = 120
+
     # ========================================================================
     # Hyperparameters
     # ========================================================================
@@ -189,13 +184,28 @@ def main(config: RunConfig) -> None:
     )
 
     # ========================================================================
-    # Problem Properties
+    # Validation Configuration
+    # This defines ground truth for logging/validation.
     # ========================================================================
 
-    C_I = 1e6
-    C_H = 1e3
-    T = 120
-    d = 1 / 5
+    validation: ValidationRegistry = {
+        Rt_KEY: ColumnRef(column="Rt"),
+        SIGMA_KEY: ColumnRef(column="sigma"),
+    }
+
+    # ============================================================================
+    # Training and Prediction Data Definition
+    # ============================================================================
+
+    dm = SIRInvDataModule(
+        hp=hp,
+        validation=validation,
+        callbacks=[DataScaling(y_scale=[1 / C_I, 1 / C_H])],
+    )
+
+    # ========================================================================
+    # Problem Definition
+    # ========================================================================
 
     def hSIR_s(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
         """Reduced SIR ODE with hospitalization constraint: dI/dt = δ(Rt - 1)I"""
@@ -210,48 +220,43 @@ def main(config: RunConfig) -> None:
         ode=hSIR_s,
         y0=torch.tensor([1]) / C_I,
         args={
-            DELTA_KEY: Argument(d, name=DELTA_KEY),
+            DELTA_KEY: Argument(1 / 5),
         },
     )
 
-    # ========================================================================
-    # Validation Configuration
-    # ========================================================================
-
-    validation: ValidationRegistry = {
-        Rt_KEY: ColumnRef(column="Rt"),
-        SIGMA_KEY: ColumnRef(column="sigma"),
-    }
-
-    # ============================================================================
-    # Training / Prediction Execution
-    # ============================================================================
-
-    dm = SIRInvDataModule(
-        hp=hp,
-        validation=validation,
-        callbacks=[DataScaling(y_scale=[1 / C_I, 1 / C_H])],
+    fields = FieldsRegistry(
+        {
+            I_KEY: Field(config=hp.fields_config),
+        }
+    )
+    params = ParamsRegistry(
+        {
+            Rt_KEY: Parameter(config=hp.params_config),
+            SIGMA_KEY: Parameter(config=hp.params_config),
+        }
     )
 
-    # define problem
-    I_field = Field(config=replace(hp.fields_config, name=I_KEY))
-    Rt = Parameter(config=replace(hp.params_config, name=Rt_KEY))
-    sigma = Parameter(
-        config=replace(
-            cast(MLPConfig, hp.params_config),
-            name=SIGMA_KEY,
-            output_activation="sigmoid",
-        )
-    )
+    def predict_data(x_data: Tensor, fields: FieldsRegistry, params: ParamsRegistry) -> Tensor:
+        delta = props.args[DELTA_KEY]
+        I = fields[I_KEY]
+        sigma = params[SIGMA_KEY]
+
+        I_pred: Tensor = I(x_data)
+        H_pred: Tensor = (delta(x_data) * C_I * sigma(x_data) * I_pred) / C_H
+
+        return torch.stack([I_pred, H_pred])
 
     problem = HospitalizedSIRInvProblem(
         props=props,
         hp=hp,
-        fields=[I_field],
-        params=[Rt, sigma],
-        C_H=C_H,
-        C_I=C_I,
+        fields=fields,
+        params=params,
+        predict_data=predict_data,
     )
+
+    # ============================================================================
+    # Training Modules Definition
+    # ============================================================================
 
     if config.predict:
         module = PINNModule.load_from_checkpoint(
@@ -284,7 +289,7 @@ def main(config: RunConfig) -> None:
         PredictionsWriter(
             predictions_path=config.predictions_dir / "predictions.pt",
             on_prediction=lambda _, __, predictions_list, ___: plot_and_save(
-                predictions_list[0], config.predictions_dir, props, C_I, C_H, d
+                predictions_list[0], config.predictions_dir, props, C_I, C_H
             ),
         ),
     ]
@@ -318,6 +323,10 @@ def main(config: RunConfig) -> None:
         log_every_n_steps=0,
     )
 
+    # ============================================================================
+    # Execution
+    # ============================================================================
+
     if not config.predict:
         trainer.fit(module, dm)
         trainer.save_checkpoint(config.model_path, weights_only=False)
@@ -338,11 +347,11 @@ def plot_and_save(
     props: ODEProperties,
     C_I: float,
     C_H: float,
-    delta: float,
 ) -> None:
     batch, preds, trues = predictions
     t_data, y_data = batch
     I_obs_data, H_obs_data = y_data[:, 0], y_data[:, 1]
+    delta = props.args[DELTA_KEY](t_data)
 
     I_pred = C_I * preds[I_KEY]
     Rt_pred = preds[Rt_KEY]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 
@@ -20,9 +20,11 @@ from pinn.core import (
     Argument,
     ColumnRef,
     Field,
+    FieldsRegistry,
     IngestionConfig,
     MLPConfig,
     Parameter,
+    ParamsRegistry,
     Predictions,
     SchedulerConfig,
     ValidationRegistry,
@@ -75,6 +77,10 @@ def format_progress_bar(key: str, value: Metric) -> Metric:
 
 
 def main(config: RunConfig) -> None:
+    # constants used for the scaling feature of this implementation
+    C = 1e6
+    T = 120
+
     # ========================================================================
     # Hyperparameters
     # ========================================================================
@@ -117,12 +123,27 @@ def main(config: RunConfig) -> None:
     )
 
     # ========================================================================
-    # Problem Properties
+    # Validation Configuration
+    # This defines ground truth for logging/validation.
     # ========================================================================
 
-    C = 1e6
-    T = 120
-    d = 1 / 5
+    validation: ValidationRegistry = {
+        Rt_KEY: ColumnRef(column="Rt"),
+    }
+
+    # ============================================================================
+    # Training and Prediction Data Definition
+    # ============================================================================
+
+    dm = SIRInvDataModule(
+        hp=hp,
+        validation=validation,
+        callbacks=[DataScaling(y_scale=1 / C)],
+    )
+
+    # ========================================================================
+    # Problem Definition
+    # ========================================================================
 
     def rSIR_s(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
         I = y
@@ -136,40 +157,31 @@ def main(config: RunConfig) -> None:
         ode=rSIR_s,
         y0=torch.tensor([1]) / C,
         args={
-            DELTA_KEY: Argument(d, name=DELTA_KEY),
+            DELTA_KEY: Argument(1 / 5),
         },
     )
 
-    # ========================================================================
-    # Validation Configuration
-    # This defines ground truth for logging/validation.
-    # Resolved lazily when data is loaded.
-    # ========================================================================
-
-    validation: ValidationRegistry = {
-        Rt_KEY: ColumnRef(column="Rt"),
-    }
-
-    # ============================================================================
-    # Training / Prediction Execution
-    # ============================================================================
-
-    dm = SIRInvDataModule(
-        hp=hp,
-        validation=validation,
-        callbacks=[DataScaling(y_scale=1 / C)],
+    fields = FieldsRegistry(
+        {
+            I_KEY: Field(config=hp.fields_config),
+        }
     )
-
-    # define problem
-    I_field = Field(config=replace(hp.fields_config, name=I_KEY))
-    Rt = Parameter(config=replace(hp.params_config, name=Rt_KEY))
+    params = ParamsRegistry(
+        {
+            Rt_KEY: Parameter(config=hp.params_config),
+        }
+    )
 
     problem = SIRInvProblem(
-        props=props,
         hp=hp,
-        fields=[I_field],
-        params=[Rt],
+        props=props,
+        fields=fields,
+        params=params,
     )
+
+    # ============================================================================
+    # Training Modules Definition
+    # ============================================================================
 
     if config.predict:
         module = PINNModule.load_from_checkpoint(
@@ -235,6 +247,10 @@ def main(config: RunConfig) -> None:
         callbacks=callbacks,
         log_every_n_steps=0,
     )
+
+    # ============================================================================
+    # Execution
+    # ============================================================================
 
     if not config.predict:
         trainer.fit(module, dm)

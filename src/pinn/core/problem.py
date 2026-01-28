@@ -9,7 +9,7 @@ from torch import Tensor
 import torch.nn as nn
 
 from pinn.core.context import InferredContext
-from pinn.core.nn import Field, Parameter
+from pinn.core.nn import FieldsRegistry, Parameter, ParamsRegistry
 from pinn.core.types import LOSS_KEY, DataBatch, LogFn, TrainingBatch
 
 
@@ -65,8 +65,8 @@ class Problem(nn.Module):
         self,
         constraints: list[Constraint],
         criterion: nn.Module,
-        fields: list[Field],
-        params: list[Parameter],
+        fields: FieldsRegistry,
+        params: ParamsRegistry,
     ):
         super().__init__()
         self.constraints = constraints
@@ -74,8 +74,8 @@ class Problem(nn.Module):
         self.fields = fields
         self.params = params
 
-        self._fields = nn.ModuleList(fields)
-        self._params = nn.ModuleList(params)
+        self._fields = nn.ModuleList(fields.values())
+        self._params = nn.ModuleList(params.values())
 
     def inject_context(self, context: InferredContext) -> None:
         """
@@ -109,10 +109,10 @@ class Problem(nn.Module):
             total = total + c.loss(batch, self.criterion, log)
 
         if log is not None:
-            for param in self.params:
-                param_loss = self._param_validation_loss(param, x_coll)
+            for name, param in self.params.items():
+                param_loss = self._param_validation_loss(name, param, x_coll)
                 if param_loss is not None:
-                    log(f"loss/{param.name}", param_loss, progress_bar=True)
+                    log(f"loss/{name}", param_loss, progress_bar=True)
 
             log(LOSS_KEY, total, progress_bar=True)
 
@@ -132,8 +132,8 @@ class Problem(nn.Module):
 
         x, y = batch
 
-        preds = {f.name: f(x).squeeze(-1) for f in self.fields}
-        preds |= {p.name: p(x).squeeze(-1) for p in self.params}
+        preds = {name: f(x).squeeze(-1) for name, f in self.fields.items()}
+        preds |= {name: p(x).squeeze(-1) for name, p in self.params.items()}
 
         return (x.squeeze(-1), y.squeeze(-1)), preds
 
@@ -144,9 +144,9 @@ class Problem(nn.Module):
         """
 
         return {
-            p.name: p_true.squeeze(-1)
-            for p in self.params
-            if (p_true := self._get_true_param(p.name, x)) is not None
+            name: p_true.squeeze(-1)
+            for name, p in self.params.items()
+            if (p_true := self._get_true_param(name, x)) is not None
         } or None
 
     def _get_true_param(self, param_name: str, x: Tensor) -> Tensor | None:
@@ -165,7 +165,9 @@ class Problem(nn.Module):
 
         return self.context.validation[param_name](x)
 
-    def _param_validation_loss(self, param: Parameter, x_coll: Tensor) -> Tensor | None:
+    def _param_validation_loss(
+        self, param_name: str, param: Parameter, x_coll: Tensor
+    ) -> Tensor | None:
         """
         Compute validation loss for a parameter against ground truth.
 
@@ -176,7 +178,7 @@ class Problem(nn.Module):
         Returns:
             Loss value, or None if no validation source is configured.
         """
-        true = self._get_true_param(param.name, x_coll)
+        true = self._get_true_param(param_name, x_coll)
         if true is None:
             return None
 

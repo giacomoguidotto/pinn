@@ -27,7 +27,6 @@ class MLPConfig:
         activation: Activation function to use between layers.
         output_activation: Optional activation function for the output layer.
         encode: Optional function to encode inputs before passing to MLP.
-        name: Name of the field or parameter.
     """
 
     in_dim: int
@@ -36,7 +35,6 @@ class MLPConfig:
     activation: Activations
     output_activation: Activations | None = None
     encode: Callable[[Tensor], Tensor] | None = None
-    name: str = "u"
 
 
 @dataclass(kw_only=True)
@@ -46,11 +44,9 @@ class ScalarConfig:
 
     Attributes:
         init_value: Initial value for the parameter.
-        name: Name of the parameter.
     """
 
     init_value: float
-    name: str = "p"
 
 
 @dataclass(kw_only=True)

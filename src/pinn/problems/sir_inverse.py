@@ -14,10 +14,9 @@ from pinn.core import (
     Constraint,
     DataCallback,
     Domain1D,
-    Field,
     FieldsRegistry,
     GenerationConfig,
-    Parameter,
+    ParamsRegistry,
     PINNDataModule,
     PINNHyperparameters,
     Problem,
@@ -109,10 +108,12 @@ class SIRInvProblem(Problem):
         self,
         props: ODEProperties,
         hp: SIRInvHyperparameters,
-        fields: list[Field],
-        params: list[Parameter],
+        fields: FieldsRegistry,
+        params: ParamsRegistry,
     ) -> None:
-        def predict_data(x_data: Tensor, fields: FieldsRegistry) -> Tensor:
+        def predict_data(
+            x_data: Tensor, fields: FieldsRegistry, _params: ParamsRegistry
+        ) -> Tensor:
             I = fields[I_KEY]
             I_pred = I(x_data)
             return cast(Tensor, I_pred)
@@ -131,6 +132,7 @@ class SIRInvProblem(Problem):
             ),
             DataConstraint(
                 fields=fields,
+                params=params,
                 predict_data=predict_data,
                 weight=hp.data_weight,
             ),

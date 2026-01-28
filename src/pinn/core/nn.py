@@ -79,7 +79,6 @@ class Field(nn.Module):
         config: MLPConfig,
     ):
         super().__init__()
-        self._name = config.name
         self.encode = config.encode
         dims = [config.in_dim] + config.hidden_layers + [config.out_dim]
         act = get_activation(config.activation)
@@ -96,11 +95,6 @@ class Field(nn.Module):
 
         self.net = nn.Sequential(*layers)
         self.apply(self._init)
-
-    @property
-    def name(self) -> str:
-        """Name of the field."""
-        return self._name
 
     @staticmethod
     def _init(m: nn.Module) -> None:
@@ -131,17 +125,10 @@ class Argument:
 
     Args:
         value: The value (float) or function (callable).
-        name: The name of the argument.
     """
 
-    def __init__(self, value: float | Callable[[Tensor], Tensor], name: str):
+    def __init__(self, value: float | Callable[[Tensor], Tensor]):
         self._value = value
-        self._name = name
-
-    @property
-    def name(self) -> str:
-        """Name of the argument."""
-        return self._name
 
     def __call__(self, x: Tensor) -> Tensor:
         """
@@ -160,7 +147,7 @@ class Argument:
 
     @override
     def __repr__(self) -> str:
-        return f"Argument(name={self._name}, value={self._value})"
+        return f"Argument(value={self._value})"
 
 
 class Parameter(nn.Module, Argument):
@@ -178,7 +165,6 @@ class Parameter(nn.Module, Argument):
     ):
         super().__init__()
         self.config = config
-        self._name = config.name
         self._mode: Literal["scalar", "mlp"]
 
         if isinstance(config, ScalarConfig):
@@ -202,12 +188,6 @@ class Parameter(nn.Module, Argument):
 
             self.net = nn.Sequential(*layers)
             self.apply(self._init)
-
-    @property
-    @override
-    def name(self) -> str:
-        """Name of the parameter."""
-        return self._name
 
     @property
     def mode(self) -> Literal["scalar", "mlp"]:

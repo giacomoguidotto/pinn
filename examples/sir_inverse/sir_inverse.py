@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 
@@ -20,9 +20,11 @@ from pinn.core import (
     Argument,
     ColumnRef,
     Field,
+    FieldsRegistry,
     IngestionConfig,
     MLPConfig,
     Parameter,
+    ParamsRegistry,
     Predictions,
     SchedulerConfig,
     ValidationRegistry,
@@ -75,9 +77,11 @@ def format_progress_bar(key: str, value: Metric) -> Metric:
 
 
 def main(config: RunConfig) -> None:
-    # global constants for the ODE model
+    # constants used for the scaling feature of this implementation
     C = 1e6
     T = 90
+
+    # constants used for the problem and validation definitions
     N = 56e6
     d = 1 / 5
 
@@ -86,8 +90,8 @@ def main(config: RunConfig) -> None:
     #     ode=SIR,
     #     y0=torch.tensor([N - 1, 1]),
     #     args={
-    #         DELTA_KEY: Argument(d, name=DELTA_KEY),
-    #         N_KEY: Argument(N, name=N_KEY),
+    #         DELTA_KEY: Argument(d),
+    #         N_KEY: Argument(N),
     #     },
     # )
 
@@ -149,7 +153,27 @@ def main(config: RunConfig) -> None:
     )
 
     # ========================================================================
-    # Problem Properties
+    # Validation Configuration
+    # This defines ground truth for logging/validation.
+    # ========================================================================
+
+    validation: ValidationRegistry = {
+        BETA_KEY: ColumnRef(column="Rt", transform=lambda rt: rt * d),
+        # BETA_KEY: lambda x: torch.full_like(x, 0.6),
+    }
+
+    # ============================================================================
+    # Training and Prediction Data Definition
+    # ============================================================================
+
+    dm = SIRInvDataModule(
+        hp=hp,
+        validation=validation,
+        callbacks=[DataScaling(y_scale=1 / C)],
+    )
+
+    # ========================================================================
+    # Problem Definition
     # ========================================================================
 
     def SIR_s(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
@@ -167,44 +191,33 @@ def main(config: RunConfig) -> None:
         ode=SIR_s,
         y0=torch.tensor([N - 1, 1]) / C,
         args={
-            DELTA_KEY: Argument(d, name=DELTA_KEY),
-            N_KEY: Argument(N, name=N_KEY),
+            DELTA_KEY: Argument(d),
+            N_KEY: Argument(N),
         },
     )
 
-    # ========================================================================
-    # Validation Configuration
-    # This defines ground truth for logging/validation.
-    # Resolved lazily when data is loaded.
-    # ========================================================================
-
-    validation: ValidationRegistry = {
-        BETA_KEY: ColumnRef(column="Rt", transform=lambda rt: rt * d),
-        # BETA_KEY: lambda x: torch.full_like(x, 0.6),
-    }
-
-    # ============================================================================
-    # Training / Prediction Execution
-    # ============================================================================
-
-    dm = SIRInvDataModule(
-        # gen_props=gen_props,
-        hp=hp,
-        validation=validation,
-        callbacks=[DataScaling(y_scale=1 / C)],
+    fields = FieldsRegistry(
+        {
+            S_KEY: Field(config=hp.fields_config),
+            I_KEY: Field(config=hp.fields_config),
+        }
     )
-
-    # define problem
-    S_field = Field(config=replace(hp.fields_config, name=S_KEY))
-    I_field = Field(config=replace(hp.fields_config, name=I_KEY))
-    beta = Parameter(config=replace(hp.params_config, name=BETA_KEY))
+    params = ParamsRegistry(
+        {
+            BETA_KEY: Parameter(config=hp.params_config),
+        }
+    )
 
     problem = SIRInvProblem(
-        props=props,
         hp=hp,
-        fields=[S_field, I_field],
-        params=[beta],
+        props=props,
+        fields=fields,
+        params=params,
     )
+
+    # ============================================================================
+    # Training Modules Definition
+    # ============================================================================
 
     if config.predict:
         module = PINNModule.load_from_checkpoint(
@@ -270,6 +283,10 @@ def main(config: RunConfig) -> None:
         callbacks=callbacks,
         log_every_n_steps=0,
     )
+
+    # ============================================================================
+    # Execution
+    # ============================================================================
 
     if not config.predict:
         trainer.fit(module, dm)
