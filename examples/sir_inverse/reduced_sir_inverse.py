@@ -32,7 +32,7 @@ from pinn.core import (
 from pinn.lightning import PINNModule, SMMAStopping
 from pinn.lightning.callbacks import DataScaling, FormattedProgressBar, Metric, PredictionsWriter
 from pinn.problems import ODEProperties, SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem
-from pinn.problems.sir_inverse import BETA_KEY, DELTA_KEY, I_KEY, N_KEY, S_KEY
+from pinn.problems.sir_inverse import DELTA_KEY, I_KEY, Rt_KEY
 
 # ============================================================================
 # Configuration
@@ -60,7 +60,7 @@ class RunConfig:
 
 
 def create_dir(dir: Path) -> Path:
-    dir.mkdir(exist_ok=True)
+    dir.mkdir(exist_ok=True, parents=True)
     return dir
 
 
@@ -79,21 +79,7 @@ def format_progress_bar(key: str, value: Metric) -> Metric:
 def main(config: RunConfig) -> None:
     # constants used for the scaling feature of this implementation
     C = 1e6
-    T = 90
-
-    # constants used for the problem and validation definitions
-    N = 56e6
-    d = 1 / 5
-
-    # gen_props = ODEProperties(
-    #     # add time domain
-    #     ode=SIR,
-    #     y0=torch.tensor([N - 1, 1]),
-    #     args={
-    #         DELTA_KEY: Argument(d),
-    #         N_KEY: Argument(N),
-    #     },
-    # )
+    T = 120
 
     # ========================================================================
     # Hyperparameters
@@ -105,19 +91,9 @@ def main(config: RunConfig) -> None:
             batch_size=100,
             data_ratio=2,
             collocations=6000,
-            df_path=Path("./data/real_sir_data.csv"),
+            df_path=Path("./data/synt_h_data.csv"),
             y_columns=["I_obs"],
         ),
-        # training_data=GenerationConfig(
-        #     batch_size=100,
-        #     data_ratio=2,
-        #     collocations=6000,
-        #     x=torch.linspace(start=0, end=T, steps=T + 1),
-        #     args_to_train={
-        #         BETA_KEY: Argument(0.6, name=BETA_KEY),
-        #     },
-        #     noise_level=0,
-        # ),
         fields_config=MLPConfig(
             in_dim=1,
             out_dim=1,
@@ -125,9 +101,6 @@ def main(config: RunConfig) -> None:
             activation="tanh",
             output_activation="softplus",
         ),
-        # params_config=ScalarConfig(
-        #     init_value=0.5,
-        # ),
         params_config=MLPConfig(
             in_dim=1,
             out_dim=1,
@@ -144,12 +117,9 @@ def main(config: RunConfig) -> None:
         ),
         # smma_stopping=SMMAStoppingConfig(
         #     window=50,
-        #     threshold=0.1,
+        #     threshold=0.01,
         #     lookback=50,
         # ),
-        pde_weight=1,
-        ic_weight=1,
-        data_weight=1,
     )
 
     # ========================================================================
@@ -158,8 +128,7 @@ def main(config: RunConfig) -> None:
     # ========================================================================
 
     validation: ValidationRegistry = {
-        BETA_KEY: ColumnRef(column="Rt", transform=lambda rt: rt * d),
-        # BETA_KEY: lambda x: torch.full_like(x, 0.6),
+        Rt_KEY: ColumnRef(column="Rt"),
     }
 
     # ============================================================================
@@ -176,35 +145,30 @@ def main(config: RunConfig) -> None:
     # Problem Definition
     # ========================================================================
 
-    def SIR_s(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
-        S, I = y
-        b, d, N = args[BETA_KEY], args[DELTA_KEY], args[N_KEY]
+    def rSIR_s(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
+        I = y
+        d, Rt = args[DELTA_KEY], args[Rt_KEY]
 
-        dS = -b(x) * I * S * C / N(x)
-        dI = b(x) * I * S * C / N(x) - d(x) * I
-
-        dS = dS * T
+        dI = d(x) * (Rt(x) - 1) * I
         dI = dI * T
-        return torch.stack([dS, dI])
+        return dI
 
     props = ODEProperties(
-        ode=SIR_s,
-        y0=torch.tensor([N - 1, 1]) / C,
+        ode=rSIR_s,
+        y0=torch.tensor([1]) / C,
         args={
-            DELTA_KEY: Argument(d),
-            N_KEY: Argument(N),
+            DELTA_KEY: Argument(1 / 5),
         },
     )
 
     fields = FieldsRegistry(
         {
-            S_KEY: Field(config=hp.fields_config),
             I_KEY: Field(config=hp.fields_config),
         }
     )
     params = ParamsRegistry(
         {
-            BETA_KEY: Parameter(config=hp.params_config),
+            Rt_KEY: Parameter(config=hp.params_config),
         }
     )
 
@@ -311,50 +275,29 @@ def plot_and_save(
     batch, preds, trues = predictions
     t_data, I_data = batch
 
-    N = props.args[N_KEY](t_data)
+    Rt_pred = preds[Rt_KEY]
+    Rt_true = trues[Rt_KEY] if trues else None
 
-    S_pred = C * preds[S_KEY]
     I_pred = C * preds[I_KEY]
-    R_pred = N - S_pred - I_pred
-
     I_data = C * I_data
-
-    beta_pred = preds[BETA_KEY]
-    beta_true = trues[BETA_KEY] if trues else None
 
     # plot
     sns.set_theme(style="darkgrid")
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
-    ax1 = axes[0]
-    ax2 = ax1.twinx()
+    sns.lineplot(x=t_data, y=I_pred, label="$I_{pred}$", ax=axes[0])
+    sns.lineplot(x=t_data, y=I_data, label="$I_{observed}$", linestyle="--", ax=axes[0])
+    axes[0].set_title("Reduced SIR Model Predictions")
+    axes[0].set_xlabel("Time (days)")
+    axes[0].set_ylabel("I (Population)")
+    axes[0].legend()
 
-    sns.lineplot(x=t_data, y=S_pred, label="$S_{pred}$", ax=ax1, color="C0")
-    ax1.set_ylabel("S (Population)", color="C0")
-    ax1.tick_params(axis="y", labelcolor="C0")
+    sns.lineplot(x=t_data, y=Rt_true, label=r"$R_{t, true}$", ax=axes[1])
+    sns.lineplot(x=t_data, y=Rt_pred, label=r"$R_{t, pred}$", linestyle="--", ax=axes[1])
 
-    sns.lineplot(x=t_data, y=I_pred, label="$I_{pred}$", ax=ax2, color="C3")
-    sns.lineplot(x=t_data, y=R_pred, label="$R_{pred}$", ax=ax2, color="C3")
-    sns.lineplot(x=t_data, y=I_data, label="$I_{observed}$", linestyle="--", ax=ax2, color="C1")
-    ax2.set_ylabel("I, R (Population)", color="C3")
-    ax2.tick_params(axis="y", labelcolor="C3")
-    ax2.grid(False)  # disable grid on secondary axis to avoid overlap with legend
-
-    ax1.set_title("SIR Model Predictions")
-    ax1.set_xlabel("Time (days)")
-
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper center")
-    ax2.legend().remove()
-
-    if beta_true is not None:
-        sns.lineplot(x=t_data, y=beta_true, label=r"$\beta_{true}$", ax=axes[1])
-    sns.lineplot(x=t_data, y=beta_pred, label=r"$\beta_{pred}$", linestyle="--", ax=axes[1])
-
-    axes[1].set_title(r"$\beta$ Parameter Prediction")
+    axes[1].set_title(r"$R_t$ Parameter Prediction")
     axes[1].set_xlabel("Time (days)")
-    axes[1].set_ylabel(r"$\beta$")
+    axes[1].set_ylabel(r"$R_t$")
     axes[1].legend()
 
     plt.tight_layout()
@@ -366,11 +309,9 @@ def plot_and_save(
         {
             "t": t_data,
             "I_observed": I_data,
-            "S_pred": S_pred,
             "I_pred": I_pred,
-            "R_pred": R_pred,
-            "beta_pred": beta_pred,
-            "beta_true": beta_true,
+            "Rt_pred": Rt_pred,
+            "Rt_true": Rt_true,
         }
     )
 
@@ -383,7 +324,7 @@ def plot_and_save(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SIR Inverse Example")
+    parser = argparse.ArgumentParser(description="Reduced SIR Inverse Example")
     parser.add_argument(
         "--predict",
         action="store_true",
@@ -391,8 +332,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    experiment_name = "sir-inverse"
-    run_name = "v7-real-data"
+    experiment_name = "sir-inverse-reduced"
+    run_name = "v0"
 
     log_dir = Path("./logs")
     tensorboard_dir = log_dir / "tensorboard"
@@ -426,5 +367,4 @@ if __name__ == "__main__":
         checkpoint_dir=temp_dir,
         experiment_name=experiment_name,
     )
-
     main(config)

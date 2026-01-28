@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 
@@ -13,24 +13,86 @@ import pandas as pd
 import seaborn as sns
 import torch
 from torch import Tensor
+import torch.nn as nn
 
 from pinn.core import (
     LOSS_KEY,
     ArgsRegistry,
     Argument,
     ColumnRef,
+    Constraint,
     Field,
+    FieldsRegistry,
     IngestionConfig,
     MLPConfig,
     Parameter,
+    ParamsRegistry,
     Predictions,
+    Problem,
     SchedulerConfig,
     ValidationRegistry,
 )
 from pinn.lightning import PINNModule, SMMAStopping
 from pinn.lightning.callbacks import DataScaling, FormattedProgressBar, Metric, PredictionsWriter
-from pinn.problems import ODEProperties, SIRInvDataModule, SIRInvHyperparameters, SIRInvProblem
+from pinn.problems import ODEProperties, SIRInvDataModule, SIRInvHyperparameters
+from pinn.problems.ode import DataConstraint, ICConstraint, PredictDataFn, ResidualsConstraint
 from pinn.problems.sir_inverse import DELTA_KEY, I_KEY, Rt_KEY
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+SIGMA_KEY = "sigma"
+H_KEY = "H"
+
+
+# ============================================================================
+# Hospitalized Problem Definition
+# ============================================================================
+
+
+class HospitalizedSIRInvProblem(Problem):
+    """
+    SIR Inverse Problem using hospitalization data.
+    """
+
+    def __init__(
+        self,
+        props: ODEProperties,
+        hp: SIRInvHyperparameters,
+        fields: FieldsRegistry,
+        params: ParamsRegistry,
+        predict_data: PredictDataFn,
+    ) -> None:
+        constraints: list[Constraint] = [
+            ResidualsConstraint(
+                props=props,
+                fields=fields,
+                params=params,
+                weight=hp.pde_weight,
+            ),
+            ICConstraint(
+                props=props,
+                fields=fields,
+                weight=hp.ic_weight,
+            ),
+            DataConstraint(
+                fields=fields,
+                params=params,
+                predict_data=predict_data,
+                weight=hp.data_weight,
+            ),
+        ]
+
+        criterion = nn.MSELoss()
+
+        super().__init__(
+            constraints=constraints,
+            criterion=criterion,
+            fields=fields,
+            params=params,
+        )
+
 
 # ============================================================================
 # Configuration
@@ -75,6 +137,11 @@ def format_progress_bar(key: str, value: Metric) -> Metric:
 
 
 def main(config: RunConfig) -> None:
+    # constants used for the scaling feature of this implementation
+    C_I = 1e6
+    C_H = 1e3
+    T = 120
+
     # ========================================================================
     # Hyperparameters
     # ========================================================================
@@ -86,7 +153,7 @@ def main(config: RunConfig) -> None:
             data_ratio=2,
             collocations=6000,
             df_path=Path("./data/synt_h_data.csv"),
-            y_columns=["I_obs"],
+            y_columns=["I_obs", "H_obs"],
         ),
         fields_config=MLPConfig(
             in_dim=1,
@@ -117,14 +184,31 @@ def main(config: RunConfig) -> None:
     )
 
     # ========================================================================
-    # Problem Properties
+    # Validation Configuration
+    # This defines ground truth for logging/validation.
     # ========================================================================
 
-    C = 1e6
-    T = 120
-    d = 1 / 5
+    validation: ValidationRegistry = {
+        Rt_KEY: ColumnRef(column="Rt"),
+        SIGMA_KEY: ColumnRef(column="sigma"),
+    }
 
-    def rSIR_s(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
+    # ============================================================================
+    # Training and Prediction Data Definition
+    # ============================================================================
+
+    dm = SIRInvDataModule(
+        hp=hp,
+        validation=validation,
+        callbacks=[DataScaling(y_scale=[1 / C_I, 1 / C_H])],
+    )
+
+    # ========================================================================
+    # Problem Definition
+    # ========================================================================
+
+    def hSIR_s(x: Tensor, y: Tensor, args: ArgsRegistry) -> Tensor:
+        """Reduced SIR ODE with hospitalization constraint: dI/dt = δ(Rt - 1)I"""
         I = y
         d, Rt = args[DELTA_KEY], args[Rt_KEY]
 
@@ -133,43 +217,46 @@ def main(config: RunConfig) -> None:
         return dI
 
     props = ODEProperties(
-        ode=rSIR_s,
-        y0=torch.tensor([1]) / C,
+        ode=hSIR_s,
+        y0=torch.tensor([1]) / C_I,
         args={
-            DELTA_KEY: Argument(d, name=DELTA_KEY),
+            DELTA_KEY: Argument(1 / 5),
         },
     )
 
-    # ========================================================================
-    # Validation Configuration
-    # This defines ground truth for logging/validation.
-    # Resolved lazily when data is loaded.
-    # ========================================================================
-
-    validation: ValidationRegistry = {
-        Rt_KEY: ColumnRef(column="Rt"),
-    }
-
-    # ============================================================================
-    # Training / Prediction Execution
-    # ============================================================================
-
-    dm = SIRInvDataModule(
-        hp=hp,
-        validation=validation,
-        callbacks=[DataScaling(y_scale=1 / C)],
+    fields = FieldsRegistry(
+        {
+            I_KEY: Field(config=hp.fields_config),
+        }
+    )
+    params = ParamsRegistry(
+        {
+            Rt_KEY: Parameter(config=hp.params_config),
+            SIGMA_KEY: Parameter(config=hp.params_config),
+        }
     )
 
-    # define problem
-    I_field = Field(config=replace(hp.fields_config, name=I_KEY))
-    Rt = Parameter(config=replace(hp.params_config, name=Rt_KEY))
+    def predict_data(x_data: Tensor, fields: FieldsRegistry, params: ParamsRegistry) -> Tensor:
+        delta = props.args[DELTA_KEY]
+        I = fields[I_KEY]
+        sigma = params[SIGMA_KEY]
 
-    problem = SIRInvProblem(
+        I_pred: Tensor = I(x_data)
+        H_pred: Tensor = (delta(x_data) * C_I * sigma(x_data) * I_pred) / C_H
+
+        return torch.stack([I_pred, H_pred])
+
+    problem = HospitalizedSIRInvProblem(
         props=props,
         hp=hp,
-        fields=[I_field],
-        params=[Rt],
+        fields=fields,
+        params=params,
+        predict_data=predict_data,
     )
+
+    # ============================================================================
+    # Training Modules Definition
+    # ============================================================================
 
     if config.predict:
         module = PINNModule.load_from_checkpoint(
@@ -202,7 +289,7 @@ def main(config: RunConfig) -> None:
         PredictionsWriter(
             predictions_path=config.predictions_dir / "predictions.pt",
             on_prediction=lambda _, __, predictions_list, ___: plot_and_save(
-                predictions_list[0], config.predictions_dir, props, C
+                predictions_list[0], config.predictions_dir, props, C_I, C_H
             ),
         ),
     ]
@@ -236,6 +323,10 @@ def main(config: RunConfig) -> None:
         log_every_n_steps=0,
     )
 
+    # ============================================================================
+    # Execution
+    # ============================================================================
+
     if not config.predict:
         trainer.fit(module, dm)
         trainer.save_checkpoint(config.model_path, weights_only=False)
@@ -254,50 +345,102 @@ def plot_and_save(
     predictions: Predictions,
     predictions_dir: Path,
     props: ODEProperties,
-    C: float,
+    C_I: float,
+    C_H: float,
 ) -> None:
     batch, preds, trues = predictions
-    t_data, I_data = batch
+    t_data, y_data = batch
+    I_obs_data, H_obs_data = y_data[:, 0], y_data[:, 1]
+    delta = props.args[DELTA_KEY](t_data)
 
+    I_pred = C_I * preds[I_KEY]
     Rt_pred = preds[Rt_KEY]
-    Rt_true = trues[Rt_KEY] if trues else None
+    sigma_pred = preds[SIGMA_KEY]
 
-    I_pred = C * preds[I_KEY]
-    I_data = C * I_data
+    H_pred = delta * sigma_pred * I_pred
+
+    I_obs = C_I * I_obs_data
+    H_obs = C_H * H_obs_data
+
+    Rt_true = trues[Rt_KEY] if trues and Rt_KEY in trues else None
+    sigma_true = trues[SIGMA_KEY] if trues and SIGMA_KEY in trues else None
 
     # plot
     sns.set_theme(style="darkgrid")
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
 
-    sns.lineplot(x=t_data, y=I_pred, label="$I_{pred}$", ax=axes[0])
-    sns.lineplot(x=t_data, y=I_data, label="$I_{observed}$", linestyle="--", ax=axes[0])
-    axes[0].set_title("Reduced SIR Model Predictions")
-    axes[0].set_xlabel("Time (days)")
-    axes[0].set_ylabel("I (Population)")
-    axes[0].legend()
+    ax = axes[0, 0]
+    sns.lineplot(x=t_data, y=H_pred, label=r"$\Delta H_{pred}$", ax=ax, color="C0")
+    sns.scatterplot(
+        x=t_data, y=H_obs, label=r"$\Delta H_{obs}$", ax=ax, color="C1", s=20, alpha=0.6
+    )
+    ax.set_title("Daily Hospitalizations")
+    ax.set_xlabel("Time (days)")
+    ax.set_ylabel("Daily Hospitalizations")
+    ax.legend()
 
-    sns.lineplot(x=t_data, y=Rt_true, label=r"$R_{t, true}$", ax=axes[1])
-    sns.lineplot(x=t_data, y=Rt_pred, label=r"$R_{t, pred}$", linestyle="--", ax=axes[1])
+    ax = axes[0, 1]
+    sns.lineplot(x=t_data, y=I_pred, label="$I_{pred}$", ax=ax, color="C2")
+    sns.scatterplot(x=t_data, y=I_obs, label="$I_{obs}$", ax=ax, color="C1", s=20, alpha=0.6)
+    ax.set_title("Predicted Infected Population")
+    ax.set_xlabel("Time (days)")
+    ax.set_ylabel("I (Population)")
+    ax.legend()
 
-    axes[1].set_title(r"$R_t$ Parameter Prediction")
-    axes[1].set_xlabel("Time (days)")
-    axes[1].set_ylabel(r"$R_t$")
-    axes[1].legend()
+    ax = axes[1, 0]
+    if Rt_true is not None:
+        sns.lineplot(x=t_data, y=Rt_true, label=r"$R_{t, true}$", ax=ax, color="C3")
+    sns.lineplot(
+        x=t_data,
+        y=Rt_pred,
+        label=r"$R_{t, pred}$",
+        ax=ax,
+        linestyle="--" if Rt_true is not None else "-",
+        color="C4" if Rt_true is not None else "C3",
+    )
+    ax.axhline(y=1, color="red", linestyle=":", alpha=0.5, label="$R_t = 1$")
+    ax.set_title(r"$R_t$ (Reproduction Number)")
+    ax.set_xlabel("Time (days)")
+    ax.set_ylabel(r"$R_t$")
+    ax.legend()
+
+    ax = axes[1, 1]
+    if sigma_true is not None:
+        sns.lineplot(x=t_data, y=sigma_true, label=r"$\sigma_{true}$", ax=ax, color="C5")
+    sns.lineplot(
+        x=t_data,
+        y=sigma_pred,
+        label=r"$\sigma_{pred}$",
+        ax=ax,
+        linestyle="--" if sigma_true is not None else "-",
+        color="C6" if sigma_true is not None else "C5",
+    )
+    ax.set_title(r"$\sigma$ (Hospitalization Rate)")
+    ax.set_xlabel("Time (days)")
+    ax.set_ylabel(r"$\sigma$ (fraction)")
+    ax.legend()
 
     plt.tight_layout()
 
     fig.savefig(predictions_dir / "predictions.png", dpi=300)
+    plt.close(fig)
 
     # save
     df = pd.DataFrame(
         {
             "t": t_data,
-            "I_observed": I_data,
+            "H_obs": H_obs,
+            "H_pred": H_pred,
             "I_pred": I_pred,
             "Rt_pred": Rt_pred,
-            "Rt_true": Rt_true,
+            "sigma_pred": sigma_pred,
         }
     )
+
+    if Rt_true is not None:
+        df["Rt_true"] = Rt_true
+    if sigma_true is not None:
+        df["sigma_true"] = sigma_true
 
     df.to_csv(predictions_dir / "predictions.csv", index=False, float_format="%.6e")
 
@@ -308,7 +451,7 @@ def plot_and_save(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Reduced SIR Inverse Example")
+    parser = argparse.ArgumentParser(description="SIR Inverse Problem using Hospitalization Data")
     parser.add_argument(
         "--predict",
         action="store_true",
@@ -316,7 +459,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    experiment_name = "sir-inverse-reduced"
+    experiment_name = "hospitalized-sir-inverse"
     run_name = "v0"
 
     log_dir = Path("./logs")
