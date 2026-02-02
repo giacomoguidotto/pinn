@@ -194,10 +194,8 @@ class DataScaling(DataCallback):
         x = (x - x.min()) / (x.max() - x.min())
         coll = (coll - coll.min()) / (coll.max() - coll.min())
 
-        # Determine number of series: y is [n, 1] or [n, k, 1]
         n_series = y.shape[1] if y.ndim == 3 else 1
 
-        # Build y_scale tensor with shape broadcastable to y
         if isinstance(self._y_scale_input, (int, float)):
             scale_list = [float(self._y_scale_input)] * n_series
         else:
