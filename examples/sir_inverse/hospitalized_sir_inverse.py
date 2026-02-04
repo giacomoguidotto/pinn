@@ -138,8 +138,8 @@ def format_progress_bar(key: str, value: Metric) -> Metric:
 
 def main(config: RunConfig) -> None:
     # constants used for the scaling feature of this implementation
-    C_I = 1
-    C_H = 1
+    C_I = 1e6
+    C_H = 1e3
     T = 120
 
     # ========================================================================
@@ -152,7 +152,7 @@ def main(config: RunConfig) -> None:
             batch_size=100,
             data_ratio=2,
             collocations=6000,
-            df_path=Path("./data/scaled_synt_h_data.csv"),
+            df_path=Path("./data/synt_h_data.csv"),
             y_columns=["I_obs", "H_obs"],
         ),
         fields_config=MLPConfig(
@@ -220,7 +220,7 @@ def main(config: RunConfig) -> None:
         ode=hSIR_s,
         y0=torch.tensor([1]) / C_I,
         args={
-            DELTA_KEY: Argument(T / 5),
+            DELTA_KEY: Argument(1 / 5),
         },
     )
 
@@ -232,7 +232,15 @@ def main(config: RunConfig) -> None:
     params = ParamsRegistry(
         {
             Rt_KEY: Parameter(config=hp.params_config),
-            SIGMA_KEY: Parameter(config=hp.params_config),
+            SIGMA_KEY: Parameter(
+                config=MLPConfig(
+                    in_dim=1,
+                    out_dim=1,
+                    hidden_layers=10 * [5],
+                    activation="tanh",
+                    output_activation="softplus",
+                )
+            ),
         }
     )
 
@@ -460,7 +468,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     experiment_name = "hospitalized-sir-inverse"
-    run_name = "v1-scaled-data"
+    run_name = "v0-sigma-deep-with-ic"
 
     log_dir = Path("./logs")
     tensorboard_dir = log_dir / "tensorboard"
