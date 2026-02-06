@@ -7,8 +7,8 @@ options.sessions = ["lint", "type_check", "test", "docs"]
 
 
 @session(
-    python=["3.10", "3.11", "3.12", "3.13", "3.14"],
-    uv_groups=["test", "cli"],
+    python=["3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"],
+    uv_groups=["test"],
 )
 def test(s: Session) -> None:
     s.run(

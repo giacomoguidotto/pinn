@@ -29,7 +29,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 click
-8.3.0
+8.3.1
 BSD-3-Clause
 Copyright 2014 Pallets
 
@@ -204,8 +204,8 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 
 typer-slim
-0.20.0
-MIT License
+0.21.1
+MIT
 The MIT License (MIT)
 
 Copyright (c) 2019 Sebastián Ramírez
